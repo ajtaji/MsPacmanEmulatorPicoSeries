@@ -31,11 +31,11 @@
 #SNAP_BYTES = 2084
 
 ; A frame's sprite list (VideoPrepare): up to 16 draws (8 sprites, each possibly twice for the
-; wraparound copy), 8 words each: code*256, colour*16, xflip, yflip, X0, Y0, -, -.
+; wraparound copy), 8 words each: code*64, colour*16, xflip, yflip, X0, Y0, -, -.
 #SPL_BYTES = 520                  ; word 0 = count, then 16 x 32 bytes
 
 Global Dim TileRow.u(2048)        ; 256 tiles x 8 rows: pixel lx in bits 2lx..2lx+1
-Global Dim SprPix.a(16384)        ; 64 sprites x 16 x 16, values 0..3
+Global Dim SprRow.l(1024)         ; 64 sprites x 16 rows: pixel lx in bits 2lx..2lx+1
 Global Dim PairTab.l(512)         ; 32 colour sets x 16 pixel pairs: two RGB565, first in the low half
 Global Dim SprRgb.l(128)          ; 32 colour sets x 4: RGB565, or -1 where the pen is transparent
 Global Dim TileAddr.u(1008)       ; portrait cell -> video RAM offset
@@ -97,9 +97,11 @@ Procedure VideoDecode(tiles.i, sprites.i, colours.i, lookup.i)
   Next
   For t=0 To 63
     For ly=0 To 15
+      row=0
       For lx=0 To 15
-        SprPix(t*256+ly*16+lx)=VidSpritePixel(sprites,t,ly,15-lx)
+        row=row|(VidSpritePixel(sprites,t,ly,15-lx)<<(lx*2))
       Next
+      SprRow(t*16+ly)=row
     Next
     SafetyPet()
   Next
@@ -131,7 +133,8 @@ Procedure VideoDecode(tiles.i, sprites.i, colours.i, lookup.i)
 EndProcedure
 
 ; The frame's sprites in MAME's drawing order (7..3, then 2..0 one pixel over), each with its
-; wraparound copy 256 lines up, written to the list at spl.
+; wraparound copy 256 lines up, written to the list at spl. Word 0 of a draw is code*64, the
+; byte offset of its rows in SprRow.
 ProcedureRAM VideoPrepare(snap.i, spl.i)
   Protected n.i, i.i, attr.i, sx.i, sy.i, p.i, count.i, copy.i
   count=0
@@ -142,7 +145,7 @@ ProcedureRAM VideoPrepare(snap.i, spl.i)
     If i<=2 : sy=sy+1 : EndIf
     For copy=0 To 1
       p=spl+4+count*32
-      PokeL(p,(attr>>2)*256)
+      PokeL(p,(attr>>2)*64)
       PokeL(p+4,(PeekA(snap+#SNAP_SPR+i*2+1)&31)*16)
       PokeL(p+8,attr&1)
       PokeL(p+12,(attr>>1)&1)
@@ -190,12 +193,12 @@ ProcedureRAM VideoRenderStrip(ty.i, dst.i, snap.i, spl.i)
       While y<=y1
         ly=y-y0
         If PeekL(base+8) : ly=15-ly : EndIf
-        row=@SprPix(0)+PeekL(base)+ly*16
+        row=PeekL(@SprRow(0)+PeekL(base)+ly*4)
         p=dst+((y-top)*224+x0)*2
         For lx=0 To 15
           x=x0+lx
           If x>=0 And x<224
-            If fy : c=PeekA(row+15-lx) : Else : c=PeekA(row+lx) : EndIf
+            If fy : c=(row>>((15-lx)*2))&3 : Else : c=(row>>(lx*2))&3 : EndIf
             c=PeekL(colour+c*4)
             If c>=0 : PokeU(p,c) : EndIf
           EndIf
