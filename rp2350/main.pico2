@@ -149,7 +149,7 @@ Procedure Report(us.i)
   Print(" core1_idle_us=") : PrintDec(Core1IdleUs-RepIdle1)
   Print(" bt_us=") : PrintDec(AudioBusyUs-RepAudio) : Print(" bt_live=") : PrintDec(AudioLive)
   Print(" packets=") : PrintDec(AudioPackets) : Print(" underruns=") : PrintDec(AudioUnderruns)
-  Print(" late=") : PrintDec(MspLate) : Print(" watchdog=") : PrintDec(MspWatchdogResets)
+  Print(" banks=") : PrintDec(MspBankSwitches) : Print(" decoded=") : PrintDec(MspDecoded) : Print(" late=") : PrintDec(MspLate) : Print(" watchdog=") : PrintDec(MspWatchdogResets)
   Print(" vid_err=") : PrintDec(VidError) : Print(" pc=") : PrintDec(Z80PC) : Print(" window_us=") : PrintDec(us) : PrintN("")
   RepFrames=MspFrames : RepShown=VidShown : RepDropped=VidDropped : RepIdle=MspIdleUs : RepZ80=MspZ80Us
   RepRender=VidRenderUs : RepWsg=WsgRenderUs : RepIdle1=Core1IdleUs : RepAudio=AudioBusyUs : RepT=MspTStates

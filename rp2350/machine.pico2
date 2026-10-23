@@ -12,8 +12,13 @@
 ;                IN0, IN1, DSW1, DSW2 ($00)
 ;   $6000-$7FFF, $C000-$FFFF  mirrors of $4000-$5FFF (address bits 13 and 15 ignored)
 ;   I/O port 0 (write): the byte the interrupt puts on the bus - IM 2's vector
-; The decode latch (MAME's $0038/$03B0/.../$3FF8 traps) is not modelled: the decoded bank is
-; always in, as on the decrypted-ROM bootlegs that run the same program.
+; The auxiliary board's decode latch (MAME mspacman_map's overlay): an access to $0038-$003F,
+; $03B0-$03B7, $1600-$1607, $2120-$2127, $3FF0-$3FF7, $8000-$8007 or $97F0-$97F7 puts the original
+; Pac-Man ROMs in ($0000-$3FFF, mirrored at $8000-$BFFF); an access to $3FF8-$3FFF puts the
+; decoded Ms. Pac-Man bank back. The start-up ROM test reads through them. The Z80 core fetches
+; opcodes from Z80Mem without hooks, so a switch rewrites the ROM half of Z80Mem (MachineSetBank);
+; data reads and writes of those seven pages come through the hooks. (Opcode fetches of the trap
+; ranges cannot switch; the program is not known to execute there.)
 ; Latch bits: 0 interrupt enable (0 also drops a pending interrupt), 1 sound enable, 3 flip
 ; screen, 4-5 lamps, 6 coin lockout, 7 coin counter.
 ;
@@ -27,6 +32,7 @@
 
 Global MspLatch.i, MspIntVector.i, MspDsw1.i=$C9, MspDsw2.i=0
 Global MspWatchdog.i, MspWatchdogResets.i, MspRomWrites.i, MspInterrupts.i
+Global MspDecoded.i=1, MspBankSwitches.i
 Global Dim MspSprPos.a(16)
 Global VidShowing.i= -1
 
@@ -35,20 +41,55 @@ Procedure MachineMapPages()
   For p=0 To 255
     Z80PageRd(p)=0 : Z80PageWr(p)=0
     If p<$40 Or (p>=$80 And p<$C0) : Z80PageWr(p)=1 : EndIf
+    If p=$00 Or p=$03 Or p=$16 Or p=$21 Or p=$3F Or p=$80 Or p=$97 : Z80PageRd(p)=1 : EndIf
     If p>=$48 And p<$4C : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
     If (p>=$50 And p<$80) Or p>=$C0 : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
   Next
 EndProcedure
 
-Procedure MachineLatch(bit.i, value.i)
+ProcedureRAM MachineLatch(bit.i, value.i)
   If value : MspLatch=MspLatch|(1<<bit) : Else : MspLatch=MspLatch&~(1<<bit) : EndIf
   If bit=0 And value=0 : Z80IntClear() : EndIf
   If bit=1 : WsgEnabled=value : EndIf
 EndProcedure
 
+; The ROM half of Z80Mem: 1 = the decoded Ms. Pac-Man bank, 0 = the Pac-Man ROMs.
+Procedure MachineSetBank(decoded.i)
+  Protected i.i, b.i
+  If decoded=MspDecoded : ProcedureReturn : EndIf
+  MspDecoded=decoded : MspBankSwitches=MspBankSwitches+1
+  If decoded
+    RomBuildSpace(@Z80Mem(0))
+  Else
+    For i=0 To $FFF
+      b=PeekA(RomAddr(#ROM_6E)+i) : Z80Mem(i)=b : Z80Mem($8000+i)=b
+      b=PeekA(RomAddr(#ROM_6F)+i) : Z80Mem($1000+i)=b : Z80Mem($9000+i)=b
+      b=PeekA(RomAddr(#ROM_6H)+i) : Z80Mem($2000+i)=b : Z80Mem($A000+i)=b
+      b=PeekA(RomAddr(#ROM_6J)+i) : Z80Mem($3000+i)=b : Z80Mem($B000+i)=b
+    Next
+  EndIf
+EndProcedure
+
+; An access in a trap range switches the bank (-1: not a trap address).
+ProcedureRAM.i MachineTrap(addr.i)
+  If addr>=$3FF8 And addr<=$3FFF : ProcedureReturn 1 : EndIf
+  If (addr>=$0038 And addr<=$003F) Or (addr>=$03B0 And addr<=$03B7) Or (addr>=$1600 And addr<=$1607)
+    ProcedureReturn 0
+  EndIf
+  If (addr>=$2120 And addr<=$2127) Or (addr>=$3FF0 And addr<=$3FF7) Or (addr>=$8000 And addr<=$8007) Or (addr>=$97F0 And addr<=$97F7)
+    ProcedureReturn 0
+  EndIf
+  ProcedureReturn -1
+EndProcedure
+
 ; Data reads of the pages flagged in Z80PageRd.
-Procedure.i Z80MemRead(addr.i)
-  Protected c.i, sel.i
+ProcedureRAM.i Z80MemRead(addr.i)
+  Protected c.i, sel.i, t.i
+  If addr<$4000 Or (addr>=$8000 And addr<$C000)
+    t=MachineTrap(addr)
+    If t>=0 : MachineSetBank(t) : EndIf
+    ProcedureReturn Z80Mem(addr)
+  EndIf
   c=addr&$5FFF
   If c<$5000
     If c>=$4800 And c<$4C00 : ProcedureReturn $BF : EndIf
@@ -62,9 +103,11 @@ Procedure.i Z80MemRead(addr.i)
 EndProcedure
 
 ; Data writes of the pages flagged in Z80PageWr.
-Procedure Z80MemWrite(addr.i, value.i)
-  Protected c.i, o.i
+ProcedureRAM Z80MemWrite(addr.i, value.i)
+  Protected c.i, o.i, t.i
   If addr<$4000 Or (addr>=$8000 And addr<$C000)
+    t=MachineTrap(addr)
+    If t>=0 : MachineSetBank(t) : EndIf
     MspRomWrites=MspRomWrites+1 : ProcedureReturn
   EndIf
   c=addr&$5FFF

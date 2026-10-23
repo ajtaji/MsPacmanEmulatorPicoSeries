@@ -1,6 +1,7 @@
 """Take a frame from the board and check it against an independent drawing of the same state.
 
     py -3 tools/grab.py --port COM7 --roms <ROM folder or zip> --out captures/attract.png
+    py -3 tools/grab.py --file <dump> --roms <ROM folder or zip> --out <png>   (desktop --dump)
 
 Sends 'p' to the running firmware, which prints the video state of its latest frame (SNAP, the
 2084 bytes of rp2040/video.pico's snapshot) and then the 224 x 288 picture it draws from it.
@@ -120,6 +121,27 @@ def write_png(path, pixels):
     path.write_bytes(png)
 
 
+def parse(stream):
+    """SNAP line, FRAME_BEGIN, 224 x 288 RGB565 little-endian, FRAME_END - from a port or a file."""
+    snap = None
+    while True:
+        line = stream.readline()
+        if not line:
+            raise SystemExit('no frame in the stream')
+        line = line.decode(errors='replace').strip()
+        if line.startswith('SNAP '):
+            snap = bytes.fromhex(line[5:])
+        elif line.startswith('FRAME_BEGIN'):
+            data = stream.read(224 * 288 * 2)
+            if len(data) != 224 * 288 * 2:
+                raise SystemExit(f'frame cut short: {len(data)} bytes')
+            tail = stream.readline() + stream.readline()
+            if b'FRAME_END' not in tail:
+                raise SystemExit('no FRAME_END after the picture')
+            px = struct.unpack('<%dH' % (224 * 288), data)
+            return snap, [list(px[y * 224:(y + 1) * 224]) for y in range(288)]
+
+
 def grab(port):
     import serial
     link = serial.Serial(port, 115200, timeout=2)
@@ -145,12 +167,19 @@ def grab(port):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--port', required=True)
+    p.add_argument('--port')
+    p.add_argument('--file', type=Path, help='a dump written by the desktop program (--dump) instead of a board')
     p.add_argument('--roms', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     a = p.parse_args()
     roms = load_set(a.roms)
-    snap, board = grab(a.port)
+    if a.file:
+        with a.file.open('rb') as f:
+            snap, board = parse(f)
+    elif a.port:
+        snap, board = grab(a.port)
+    else:
+        raise SystemExit('give --port or --file')
     if snap is None or len(snap) != 2084:
         raise SystemExit('no snapshot (SNAP line) before the frame')
     write_png(a.out, board)
