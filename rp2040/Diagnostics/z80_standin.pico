@@ -1,0 +1,21 @@
+; A stand-in for the Z80 core, for Diagnostics/video_check.picow ONLY: it runs no instructions.
+; It gives the machine the core's API (Z80EmulatorPicoSeries src/z80.pico) so the ROM pack, the
+; decryption, the display, the frame dump and the timing can be proved on the board without the CPU.
+; Never in a game build: mspacman.picow includes the real core.
+Global Dim Z80Mem.a(65536)
+Global Dim Z80PageRd.a(256)
+Global Dim Z80PageWr.a(256)
+Global Z80PC.i, Z80A.i, Z80F.i, Z80BC.i, Z80DE.i, Z80HL.i, Z80IX.i, Z80IY.i, Z80SP.i, Z80I.i, Z80IM.i
+Global Z80IFF1.i, Z80Halted.i, Z80Stopped.i, Z80Error.i, Z80IntLine.i, Z80IntData.i
+Procedure Z80Reset()
+  Z80PC=0 : Z80IntLine=0
+EndProcedure
+Procedure Z80IntRequest(d.i)
+  Z80IntData=d : Z80IntLine=1
+EndProcedure
+Procedure Z80IntClear()
+  Z80IntLine=0
+EndProcedure
+ProcedureRAM.i Z80Run(n.i)
+  ProcedureReturn n
+EndProcedure

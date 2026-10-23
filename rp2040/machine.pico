@@ -128,6 +128,9 @@ Procedure MachineVblank()
   WsgRender(#WSG_FRAME_SAMPLES)
   InputFrame()
   MspWatchdog=MspWatchdog+1
+  CompilerIf #MSP_CPU_STANDIN=1
+    MspWatchdog=0                    ; no program runs to write $50C0
+  CompilerEndIf
   If MspWatchdog>=16
     MspWatchdogResets=MspWatchdogResets+1
     Print("WATCHDOG: 16 frames without a write to $50C0 - machine reset (") : PrintDec(MspWatchdogResets) : PrintN(")")
@@ -138,3 +141,23 @@ Procedure MachineVblank()
     Z80IntRequest(MspIntVector) : MspInterrupts=MspInterrupts+1
   EndIf
 EndProcedure
+
+CompilerIf #MSP_CPU_STANDIN=1
+; Diagnostics/video_check.picow: a fixed picture in place of the program's (no CPU runs).
+Procedure MachineTestPicture()
+  Protected i.i
+  For i=0 To 1023
+    Z80Mem($4000+i)=i&255
+    Z80Mem($4400+i)=(i>>5)&31
+  Next
+  For i=0 To 7
+    Z80Mem($4FF0+i*2)=((i*9)&63)<<2|(i&3)
+    Z80Mem($4FF0+i*2+1)=(i*5+1)&31
+    MspSprPos(i*2)=40+i*24
+    MspSprPos(i*2+1)=40+i*28
+  Next
+  MspSprPos(14)=250 : MspSprPos(15)=8          ; sprite 7 across the clip and the right edge
+  MspSprPos(12)=20 : MspSprPos(13)=250         ; sprite 6 near the top, its wrapped copy too
+  MachineLatch(0,0)
+EndProcedure
+CompilerEndIf

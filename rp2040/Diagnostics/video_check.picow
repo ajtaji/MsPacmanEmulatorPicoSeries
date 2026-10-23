@@ -1,0 +1,23 @@
+; DIAGNOSTIC (never ships): the machine on the Pico W with a stand-in CPU and a test picture.
+; Proves on the board: the ROM pack (CRC of every file), the decryption (the decoded CRC-32s must
+; equal tools/pack_roms.py's), the tile/sprite decode and renderer (tools/grab.py compares a frame
+; pixel for pixel with an independent MAME-style drawing), the panel's DMA path and the frame timing.
+; The picture: video RAM = 0..255 repeating, colour sets changing every column of 32 bytes,
+; eight sprites with every flip, one across the clip line and one wrapped.
+#MSP_CLOCK_KHZ=200000
+#MSP_AUDIO=0
+#MSP_PHYSICAL_INPUT=1
+#MSP_STICK_TURN=1
+#MSP_CPU_STANDIN=1
+#Z80_TIMED=1
+#Z80_ASM_TAIL=1
+#Z80_MEM_HOOKS=1
+#Z80_Q=1
+#Z80_TRACK_R=1
+EnableExplicit
+XIncludeFile "../main.pico"
+Main()
+DataSection
+Speaker:
+  Data.a $00, $00, $00, $00, $00, $00
+EndDataSection

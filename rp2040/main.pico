@@ -36,7 +36,11 @@ Declare.i Z80MemRead(addr.i)
 Declare Z80MemWrite(addr.i, value.i)
 Declare.i Z80PortIn(port.i)
 Declare Z80PortOut(port.i, value.i)
-XIncludeFile "../../Z80EmulatorPicoSeries/src/z80.pico"
+CompilerIf #MSP_CPU_STANDIN=1
+  XIncludeFile "Diagnostics/z80_standin.pico"
+CompilerElse
+  XIncludeFile "../../Z80EmulatorPicoSeries/src/z80.pico"
+CompilerEndIf
 XIncludeFile "machine.pico"
 
 Global Core1Ready.i, Core1IdleUs.i
@@ -211,6 +215,9 @@ Procedure Main()
   WsgBegin(RomAddr(#ROM_1M))
   MachineMapPages()
   MachineReset()
+  CompilerIf #MSP_CPU_STANDIN=1
+    MachineTestPicture()
+  CompilerEndIf
   InputBegin()
   Print("core1 launch=") : PrintDec(LaunchCore1()) : PrintN("")
   t=Micros()
