@@ -17,10 +17,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_LIMIT = 0x10040000          # the ROM pack's first byte (romstore.pico #ROMPACK_FLASH)
+PACK_END = 0x10050000             # ... and the end of its region
 FAMILY = {'rp2040': 0xE48BFF56, 'rp2350': 0xE48BFF59}
 
 
-def image_end(uf2, family):
+def image_end(uf2, family, assets=False):
+    """End of the code blocks. With assets, blocks inside the ROM pack's region are the pack's."""
     data = uf2.read_bytes()
     if not data or len(data) % 512:
         raise SystemExit(f'{uf2} is not a whole UF2')
@@ -29,6 +31,8 @@ def image_end(uf2, family):
         m0, m1, flags, target, size, number, count, fam = struct.unpack_from('<8I', data, offset)
         if (m0, m1) != (0x0A324655, 0x9E5D5157) or fam != family:
             raise SystemExit(f'{uf2}: block {offset // 512} is not a {family:08X} UF2 block')
+        if assets and IMAGE_LIMIT <= target and target + size <= PACK_END:
+            continue
         end = max(end, target + size)
     return end
 
@@ -39,6 +43,7 @@ def main():
     p.add_argument('--source', type=Path, default=ROOT / 'rp2040' / 'mspacman.picow')
     p.add_argument('--output', type=Path)
     p.add_argument('--port')
+    p.add_argument('--assets', type=Path, help='a --flash-assets manifest (tools/pack_roms.py): the ROM pack goes up with the image; the UF2 then holds the ROMs, so --output must be outside the repository')
     p.add_argument('--seconds', type=float, default=20)
     p.add_argument('--capture', type=Path, help='serial log (default: <output>.board.log)')
     p.add_argument('--keys', default='', help='keys to send after the board starts, "@<seconds>:<keys>" items separated by ","')
@@ -46,12 +51,15 @@ def main():
 
     target = 'rp2350' if a.source.suffix.startswith('.pico2') else 'rp2040'
     out = a.output or (ROOT / 'build' / ('mspacman-pico2-w.uf2' if target == 'rp2350' else 'mspacman-pico-w.uf2'))
+    if a.assets and (a.output is None or ROOT in a.output.resolve().parents):
+        raise SystemExit('--assets puts the ROMs in the UF2: give --output outside the repository')
     out.parent.mkdir(parents=True, exist_ok=True)
     compiler = a.compiler.resolve()
     env = dict(os.environ, PMF_ROOT=str(compiler.parent))
     log = out.with_name(out.name + '.build.log')
     with log.open('w', encoding='utf-8', errors='replace') as f:
-        r = subprocess.run([str(compiler), '--compile', str(a.source.resolve()), '-S', '-o', str(out.resolve())],
+        extra = ['--flash-assets', str(a.assets.resolve())] if a.assets else []
+        r = subprocess.run([str(compiler), '--compile', str(a.source.resolve()), '-S', '-o', str(out.resolve())] + extra,
                            cwd=compiler.parent, env=env, stdout=f, stderr=subprocess.STDOUT)
     text = log.read_text(encoding='utf-8', errors='replace')
     for line in text.splitlines():
@@ -59,7 +67,7 @@ def main():
             print(line)
     if r.returncode != 0:
         raise SystemExit(f'compiler exit {r.returncode}; log {log}')
-    end = image_end(out, FAMILY[target])
+    end = image_end(out, FAMILY[target], bool(a.assets))
     if end > IMAGE_LIMIT:
         raise SystemExit(f'image ends at {end:08X}, past the ROM pack at {IMAGE_LIMIT:08X}: not uploaded')
     print(f'image ends at {end:08X}, {IMAGE_LIMIT - end} bytes below the ROM pack')

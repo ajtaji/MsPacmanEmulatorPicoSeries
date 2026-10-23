@@ -20,6 +20,8 @@ third-party tool):
 THE ROMS ARE COMMERCIAL. Keep the pack outside the repository.
 """
 import argparse
+import hashlib
+import json
 import struct
 import sys
 import zipfile
@@ -155,7 +157,20 @@ def main():
     print(f'Wrote {args.output} ({len(pack)} bytes, pack CRC-32 {zlib.crc32(pack):08X})')
     print(f'decoded 0000-3FFF CRC-32 {zlib.crc32(bytes(space[0x0000:0x4000])):08X}  '
           f'8000-BFFF CRC-32 {zlib.crc32(bytes(space[0x8000:0xC000])):08X}')
+    # The same pack as a sparse asset of an upload (--flash-assets): the route for a compiler that
+    # has no --storage-write. The UF2 such a build makes holds the ROMs: keep it private too.
+    padded = pack + bytes(-len(pack) % 256)
+    for chip, capacity, name in (('rp2040', 2 * 1024 * 1024, 'assets-rp2040.json'),
+                                 ('rp2350', 4 * 1024 * 1024, 'assets-rp2350.json')):
+        manifest = {'version': 1, 'flashCapacity': capacity, 'chip': chip, 'assets': [{
+            'path': args.output.name, 'offset': PACK_OFFSET, 'length': len(pack),
+            'sha256': hashlib.sha256(pack).hexdigest(), 'paddedLength': len(padded),
+            'paddedSha256': hashlib.sha256(padded).hexdigest()}]}
+        (args.output.parent / name).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    print(f'Manifests for --flash-assets: {args.output.parent / "assets-rp2040.json"}, assets-rp2350.json')
     print(f'Write it: PureMetalForge.exe --storage-write "{args.output}" --offset ${PACK_OFFSET:X} --port COMx -t rp2040')
+    print(f'      or: py -3 tools/build.py --compiler <exe> --assets {args.output.parent / "assets-rp2040.json"} '
+          f'--output <private folder>/mspacman-with-roms.uf2 --port COMx')
 
 
 if __name__ == '__main__':

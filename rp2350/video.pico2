@@ -212,6 +212,7 @@ ProcedureRAM VideoRenderStrip(ty.i, dst.i, snap.i, spl.i)
 EndProcedure
 
 ; ---- the panel (LAFVIN ST7796 on SPI0, as the NES's video_st7796) ----
+Declare AudioPoll()
 Procedure VideoBegin()
   SpiPeriFromSys(#MSP_CLOCK_KHZ)
   SpiBegin(0,2,3,-1,100000)
@@ -229,14 +230,16 @@ EndProcedure
 ProcedureRAM.i VideoDmaWait()
   Protected start.i
   start=Micros()
+  ; The panel link is the bottleneck (64,512 pixels a frame at 100 MHz: ~10.3 ms): the Bluetooth
+  ; sender works in the wait.
   While (PeekL(#SPI_DMA_CH0_CTRL)&#SPI_DMA_BUSY)<>0
+    AudioPoll()
     If Micros()-start>50000 : VidError=1 : ProcedureReturn 0 : EndIf
   Wend
   VidSendWaitUs=VidSendWaitUs+Micros()-start
   ProcedureReturn 1
 EndProcedure
 
-Declare AudioPoll()
 ; One whole frame to the panel, from snapshot snap. Core 1.
 ProcedureRAM VideoShowFrame(snap.i)
   Protected ty.i, buf.i, start.i
