@@ -160,5 +160,9 @@ Procedure MachineTestPicture()
   MspSprPos(14)=250 : MspSprPos(15)=8          ; sprite 7 across the clip and the right edge
   MspSprPos(12)=20 : MspSprPos(13)=250         ; sprite 6 near the top, its wrapped copy too
   MachineLatch(0,0)
+  ; a steady tone on voice 0 (waveform 0, volume 8, ~440 Hz: 440 x 2^20 / 96000 = 4806 = $012C6)
+  WsgRegs($05)=0 : WsgRegs($15)=8
+  WsgRegs($10)=6 : WsgRegs($11)=$C : WsgRegs($12)=2 : WsgRegs($13)=1 : WsgRegs($14)=0
+  MachineLatch(1,1)
 EndProcedure
 CompilerEndIf
