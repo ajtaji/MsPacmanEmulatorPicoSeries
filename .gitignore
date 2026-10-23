@@ -27,3 +27,5 @@ pacman.*
 my-*.picow
 my-*.pico2w
 captures/
+# Local builds (a released, board-tested image is copied into firmware/ by hand)
+build/

@@ -45,7 +45,7 @@ def main():
     a = p.parse_args()
 
     target = 'rp2350' if a.source.suffix.startswith('.pico2') else 'rp2040'
-    out = a.output or (ROOT / 'firmware' / ('mspacman-pico2-w.uf2' if target == 'rp2350' else 'mspacman-pico-w.uf2'))
+    out = a.output or (ROOT / 'build' / ('mspacman-pico2-w.uf2' if target == 'rp2350' else 'mspacman-pico-w.uf2'))
     out.parent.mkdir(parents=True, exist_ok=True)
     compiler = a.compiler.resolve()
     env = dict(os.environ, PMF_ROOT=str(compiler.parent))
