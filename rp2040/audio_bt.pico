@@ -1,0 +1,91 @@
+; Sound to a Bluetooth speaker: PureMetal's Shared/Bluetooth/bt_audio.pmi (A2DP + SBC), reading the
+; WSG's 48 kHz ring directly (BtAudioSource). Core 0 connects (AudioBegin, before the game starts);
+; core 1 streams (AudioPoll, between display strips). The same scheme as the NES emulator's
+; rp2040/bt_audio.pico, which plays at 60 FPS with no underruns on this board.
+;
+; The speaker's address comes from the build's wrapper (?Speaker, 6 bytes as a phone shows it).
+; The published wrapper has zeros there: no speaker, the game runs silent and says so.
+; The link key the speaker agrees on is kept in the chip's last sector ($1FF000, "BTK1" and the
+; 22-byte record - the layout the NES firmware and the tone example use), so it pairs once.
+
+#BTKEY_SECTOR = $1FF000
+#BT_LEAD_US = 65000                 ; start 65 ms behind the WSG: the ring (85 ms) is the cushion
+Global AudioRunning.i, AudioLive.i, AudioUnderruns.i, AudioPackets.i, AudioBusyUs.i
+Global AudioLastPoll.i, AudioGap.i=700, AudioLastRead.i, AudioRc.i= -1
+Global Dim BtKeyPage.a(256)
+Global Core1ParkRequest.i, Core1Parked.i
+
+CompilerIf #MSP_AUDIO=1
+Procedure.i AudioSaveKey()
+  Protected i.i, ok.i
+  For i=0 To 255 : BtKeyPage(i)=255 : Next
+  BtKeyPage(0)=66 : BtKeyPage(1)=84 : BtKeyPage(2)=75 : BtKeyPage(3)=49
+  If BtAudioKey(@BtKeyPage(4))=0 : ProcedureReturn 0 : EndIf
+  ; Core 1 runs display code from flash: park it in SRAM while the flash is written.
+  PokeL(@Core1ParkRequest,1)
+  While PeekL(@Core1Parked)=0 : SafetyPet() : Wend
+  ok=0
+  If FlashRangeErase(#BTKEY_SECTOR,4096)
+    ok=FlashRangeProgram(#BTKEY_SECTOR,@BtKeyPage(0),256)
+  EndIf
+  PokeL(@Core1ParkRequest,0)
+  ProcedureReturn ok
+EndProcedure
+
+Procedure AudioBegin(speaker.i)
+  Protected key.i, zero.i, i.i
+  zero=1
+  For i=0 To 5
+    If PeekA(speaker+i)<>0 : zero=0 : EndIf
+  Next
+  If zero
+    PrintN("Bluetooth: no speaker address in this build's wrapper; running silent")
+    ProcedureReturn
+  EndIf
+  PrintN("Bluetooth: connecting to the speaker")
+  key=$10000000+#BTKEY_SECTOR
+  If PeekA(key)=66 And PeekA(key+1)=84 And PeekA(key+2)=75 And PeekA(key+3)=49
+    BtAudioSetKey(key+4)
+  EndIf
+  BtAudioStereo(1)
+  AudioRc=BtAudioBegin(speaker)
+  If AudioRc<>0
+    Print("Bluetooth: not playing, error ") : PrintDec(AudioRc)
+    Print(" (HCI status ") : PrintDec(BtAudioStatus()) : PrintN("); running silent")
+    ProcedureReturn
+  EndIf
+  If BtAudioKeyNew()
+    If AudioSaveKey() : PrintN("Bluetooth: paired; link key saved") : Else : PrintN("Bluetooth: paired; link key NOT saved (flash)") : EndIf
+  Else
+    PrintN("Bluetooth: reconnected with the saved link key")
+  EndIf
+  BtAudioSource(@Pcm(0),#PCM_RING,@PcmCount)
+  BtAudioLead(#BT_LEAD_US)
+  ; From here core 1 drives the radio: no USB pumping and no printing from the library.
+  BtAudioPumps(0)
+  AudioRunning=1
+EndProcedure
+
+; Core 1, between strips: the library wants a call about every 0.15 ms while a frame is part-way
+; encoded and every 0.7 ms otherwise.
+ProcedureRAM AudioPoll()
+  Protected start.i
+  If PeekL(@AudioRunning)=0 : ProcedureReturn : EndIf
+  start=Micros()
+  If start-AudioLastPoll<AudioGap : ProcedureReturn : EndIf
+  AudioLastPoll=start
+  BtAudioPoll()
+  If BtAudioBusy() : AudioGap=150 : Else : AudioGap=700 : EndIf
+  If start-AudioLastRead>100000
+    AudioLive=BtAudioLive() : AudioUnderruns=BtAudioUnderruns() : AudioPackets=BtAudioPackets()
+    AudioLastRead=start
+  EndIf
+  AudioBusyUs=AudioBusyUs+Micros()-start
+EndProcedure
+CompilerElse
+Procedure AudioBegin(speaker.i)
+  PrintN("Bluetooth: built silent (#MSP_AUDIO=0)")
+EndProcedure
+ProcedureRAM AudioPoll()
+EndProcedure
+CompilerEndIf

@@ -1,0 +1,222 @@
+; Generated from rp2040/main.pico by tools/port_rp2350.py. Edit the RP2040 source, then regenerate.
+; Ms. Pac-Man for the Pico 2 W: core 0 runs the Z80 and the machine (and the WSG sound, at vertical
+; blank); core 1 draws the screen and streams the sound to the Bluetooth speaker.
+; The wrapper (mspacman.picow, or a private copy with the speaker's address) sets the build
+; constants, includes this file and gives the DataSection label Speaker (6 bytes).
+;
+; USB serial: a status line every second, and keys - see input.pico for the controls, plus
+;   p  the next frame's picture, 224 x 288 RGB565 little-endian, between FRAME_BEGIN and FRAME_END
+;   i  the inputs and the machine's latches       z  the Z80's registers
+
+XIncludeFile "RP2350/Lib/multicore_smp.pico2"
+XIncludeFile "RP2350/Lib/cyw43_nvram.pico2"
+XIncludeFile "RP2350/Lib/bits.pico2"
+XIncludeFile "RP2350/Lib/clocks.pico2"
+XIncludeFile "RP2350/Lib/timer.pico2"
+XIncludeFile "RP2350/Lib/uart.pico2"
+XIncludeFile "RP2350/Lib/safety.pico2"
+XIncludeFile "RP2350/Lib/usb_serial.pico2"
+XIncludeFile "RP2350/Lib/wiring.pico2"
+XIncludeFile "RP2350/Lib/string_out.pico2"
+XIncludeFile "RP2350/Lib/flashid.pico2"
+XIncludeFile "RP2350/Lib/flash.pico2"
+XIncludeFile "RP2350/Lib/spi.pico2"
+XIncludeFile "RP2350/Lib/st7796.pico2"
+CompilerIf #MSP_AUDIO=1
+  XIncludeFile "RP2350/Lib/cyw43.pico2"
+  XIncludeFile "RP2350/Lib/cyw43_btfw.pico2"
+  XIncludeFile "RP2350/Lib/bluetooth.pico2"
+  XIncludeFile "Shared/Bluetooth/sbc.pmi"
+  XIncludeFile "Shared/Bluetooth/bt_audio.pmi"
+CompilerEndIf
+XIncludeFile "wsg.pico2"
+XIncludeFile "input.pico2"
+XIncludeFile "video.pico2"
+XIncludeFile "audio_bt.pico2"
+XIncludeFile "romstore.pico2"
+Declare.i Z80MemRead(addr.i)
+Declare Z80MemWrite(addr.i, value.i)
+Declare.i Z80PortIn(port.i)
+Declare Z80PortOut(port.i, value.i)
+XIncludeFile "../../Z80EmulatorPicoSeries/src/z80.pico2"
+XIncludeFile "machine.pico2"
+
+Global Core1Ready.i, Core1IdleUs.i
+Global MspFrames.i, MspIdleUs.i, MspZ80Us.i, MspLate.i, MspTStates.i
+Global Dim DumpStrip.l(896)
+Global Dim DumpSprites.l(130)
+
+; ---- core 1 -----------------------------------------------------------------
+ProcedureRAM Core1Main()
+  Protected t.i, start.i
+  PokeL(@Core1Ready,1)
+  Repeat
+    ; Parked in SRAM while core 0 writes flash (the speaker's link key).
+    If PeekL(@Core1ParkRequest)<>0
+      PokeL(@Core1Parked,1)
+      While PeekL(@Core1ParkRequest)<>0 : Wend
+      PokeL(@Core1Parked,0)
+    EndIf
+    t=PeekL(@VidPublished)
+    If t<>VidShown
+      PokeL(@VidShowing,t)
+      ; Core 0 writes frame t+2 into this buffer only after seeing VidShowing: if it has
+      ; already published t+1, take that one instead.
+      If PeekL(@VidPublished)=t
+        VideoShowFrame(@VidSnap(0)+(t&1)*#SNAP_BYTES)
+        VidShown=t
+      EndIf
+      PokeL(@VidShowing,-1)
+    Else
+      start=Micros()
+      AudioPoll()
+      Core1IdleUs=Core1IdleUs+Micros()-start
+    EndIf
+  ForEver
+EndProcedure
+
+; Core 1 through the RP2350's launch library, in a procedure of its own (it saves r4-r7).
+Procedure.i LaunchCore1()
+  McCore1ReleaseHold()
+  If McLaunchCore1()=6 : ProcedureReturn 1 : EndIf
+  ProcedureReturn 0
+EndProcedure
+
+; ---- core 0 -----------------------------------------------------------------
+Procedure Serve()
+  UsbSerialTask() : SafetyPet()
+EndProcedure
+
+; The latest published frame's picture over USB serial (core 1 keeps showing it meanwhile).
+Procedure DumpFrame()
+  Protected snap.i, ty.i, i.i, v.i
+  snap=@VidSnap(0)+(PeekL(@VidPublished)&1)*#SNAP_BYTES
+  VideoPrepare(snap,@DumpSprites(0))
+  PrintN("FRAME_BEGIN 224 288")
+  For ty=0 To 35
+    VideoRenderStrip(ty,@DumpStrip(0),snap,@DumpSprites(0))
+    For i=0 To 1791
+      v=PeekU(@DumpStrip(0)+i*2)
+      UsbSerialWrite(v&255) : UsbSerialWrite(v>>8)
+    Next
+    Serve()
+  Next
+  PrintN("") : PrintN("FRAME_END")
+EndProcedure
+
+Procedure PrintZ80()
+  Print("Z80 pc=") : PrintDec(Z80PC) : Print(" sp=") : PrintDec(Z80SP) : Print(" af=") : PrintDec((Z80A<<8)|Z80F)
+  Print(" bc=") : PrintDec(Z80BC) : Print(" de=") : PrintDec(Z80DE) : Print(" hl=") : PrintDec(Z80HL)
+  Print(" ix=") : PrintDec(Z80IX) : Print(" iy=") : PrintDec(Z80IY) : Print(" i=") : PrintDec(Z80I)
+  Print(" im=") : PrintDec(Z80IM) : Print(" iff1=") : PrintDec(Z80IFF1) : Print(" halted=") : PrintDec(Z80Halted)
+  Print(" stopped=") : PrintDec(Z80Stopped) : Print(" error=") : PrintDec(Z80Error) : PrintN("")
+EndProcedure
+
+Procedure PrintInputs()
+  Print("INPUT x=") : PrintDec(InputX) : Print(" y=") : PrintDec(InputY) : Print(" buttons=") : PrintDec(InputButtons)
+  Print(" dirs=") : PrintDec(InputDirections) : Print(" in0=") : PrintDec(MspIn0) : Print(" in1=") : PrintDec(MspIn1)
+  Print(" dsw1=") : PrintDec(MspDsw1) : Print(" latch=") : PrintDec(MspLatch) : Print(" vector=") : PrintDec(MspIntVector)
+  Print(" rom_writes=") : PrintDec(MspRomWrites) : Print(" errors=") : PrintDec(InputErrors) : PrintN("")
+EndProcedure
+
+Procedure HandleKey(key.i)
+  If key<0 : ProcedureReturn : EndIf
+  If key=112 : DumpFrame()
+  ElseIf key=105 : PrintInputs()
+  ElseIf key=122 : PrintZ80()
+  Else : InputKey(key)
+  EndIf
+EndProcedure
+
+; One second's numbers.
+Global RepFrames.i, RepShown.i, RepDropped.i, RepIdle.i, RepZ80.i, RepRender.i, RepWsg.i, RepIdle1.i, RepAudio.i, RepT.i, RepInts.i, RepWait.i
+Procedure Report(us.i)
+  Print("MSP fps=") : PrintDec(MspFrames-RepFrames)
+  Print(" shown=") : PrintDec(VidShown-RepShown) : Print(" dropped=") : PrintDec(VidDropped-RepDropped)
+  Print(" tstates=") : PrintDec(MspTStates-RepT)
+  Print(" ints=") : PrintDec(MspInterrupts-RepInts)
+  Print(" z80_us=") : PrintDec(MspZ80Us-RepZ80) : Print(" wsg_us=") : PrintDec(WsgRenderUs-RepWsg)
+  Print(" core0_idle_us=") : PrintDec(MspIdleUs-RepIdle)
+  Print(" render_us=") : PrintDec(VidRenderUs-RepRender) : Print(" spi_wait_us=") : PrintDec(VidSendWaitUs-RepWait)
+  Print(" core1_idle_us=") : PrintDec(Core1IdleUs-RepIdle1)
+  Print(" bt_us=") : PrintDec(AudioBusyUs-RepAudio) : Print(" bt_live=") : PrintDec(AudioLive)
+  Print(" packets=") : PrintDec(AudioPackets) : Print(" underruns=") : PrintDec(AudioUnderruns)
+  Print(" late=") : PrintDec(MspLate) : Print(" watchdog=") : PrintDec(MspWatchdogResets)
+  Print(" vid_err=") : PrintDec(VidError) : Print(" pc=") : PrintDec(Z80PC) : Print(" window_us=") : PrintDec(us) : PrintN("")
+  RepFrames=MspFrames : RepShown=VidShown : RepDropped=VidDropped : RepIdle=MspIdleUs : RepZ80=MspZ80Us
+  RepRender=VidRenderUs : RepWsg=WsgRenderUs : RepIdle1=Core1IdleUs : RepAudio=AudioBusyUs : RepT=MspTStates
+  RepInts=MspInterrupts : RepWait=VidSendWaitUs
+EndProcedure
+
+; The machine, forever: a frame of T-states in #MSP_SLICES pieces (USB served between them),
+; vertical blank, then wait for the frame's 16.5 ms to end.
+Procedure MspRun()
+  Protected done.i, chunk.i, used.i, nextFrame.i, report.i, mark.i, now.i, stopped.i
+  nextFrame=Micros()+#MSP_FRAME_US : report=Micros() : done=0
+  Repeat
+    If Z80Stopped=0
+      While done<#MSP_FRAME_TSTATES
+        chunk=#MSP_FRAME_TSTATES/#MSP_SLICES
+        If done+chunk>#MSP_FRAME_TSTATES : chunk=#MSP_FRAME_TSTATES-done : EndIf
+        mark=Micros()
+        used=Z80Run(chunk)
+        MspZ80Us=MspZ80Us+Micros()-mark
+        done=done+used : MspTStates=MspTStates+used
+        Serve() : HandleKey(UsbSerialRead())
+        If Z80Stopped : Break : EndIf
+      Wend
+      done=done-#MSP_FRAME_TSTATES
+      If done<0 : done=0 : EndIf
+      MachineVblank()
+      MspFrames=MspFrames+1
+    ElseIf stopped=0
+      stopped=1
+      Print("Z80 STOPPED (error ") : PrintDec(Z80Error) : PrintN(") - the machine is halted; registers follow")
+      PrintZ80()
+    EndIf
+    mark=Micros()
+    While Micros()-nextFrame<0
+      Serve() : HandleKey(UsbSerialRead())
+    Wend
+    now=Micros()
+    MspIdleUs=MspIdleUs+now-mark
+    nextFrame=nextFrame+#MSP_FRAME_US
+    If now-nextFrame>50000
+      MspLate=MspLate+1 : nextFrame=now+#MSP_FRAME_US
+    EndIf
+    If now-report>=1000000
+      Report(now-report) : report=now
+    EndIf
+  ForEver
+EndProcedure
+
+Procedure Main()
+  Protected t.i, crc.l
+  SafetyBoot() : ClockInitKhz(#MSP_CLOCK_KHZ) : TimerInit() : UsbSerialInit()
+  t=Micros()
+  While UsbSerialReady()=0 And Micros()-t<3000000 : Serve() : Wend
+  PrintN("Ms. Pac-Man PureMetal - Pico 2 W")
+  VideoBegin()
+  If RomStoreOpen()=0
+    Repeat
+      RomPrintError()
+      t=Micros()
+      While Micros()-t<2000000 : Serve() : Wend
+    ForEver
+  EndIf
+  RomBuildSpace(@Z80Mem(0))
+  Print("ROMS: decoded 0000-3FFF CRC-32 ") : PrintHex(RomCrc(@Z80Mem(0),$4000),8)
+  Print("  8000-BFFF CRC-32 ") : PrintHex(RomCrc(@Z80Mem($8000),$4000),8) : PrintN("")
+  VideoDecode(RomAddr(#ROM_5E),RomAddr(#ROM_5F),RomAddr(#ROM_7F),RomAddr(#ROM_4A))
+  WsgBegin(RomAddr(#ROM_1M))
+  MachineMapPages()
+  MachineReset()
+  InputBegin()
+  Print("core1 launch=") : PrintDec(LaunchCore1()) : PrintN("")
+  t=Micros()
+  While PeekL(@Core1Ready)=0 And Micros()-t<1000000 : Serve() : Wend
+  If PeekL(@Core1Ready)=0 : PrintN("core 1 did not start; the screen will stay dark") : EndIf
+  AudioBegin(?Speaker)
+  Print("clk_khz=") : PrintDec(ClockSysKhz()) : Print(" spi_hz=") : PrintDec(SpiHz(0)) : PrintN("")
+  MspRun()
+EndProcedure

@@ -1,0 +1,120 @@
+; Generated from rp2040/input.pico by tools/port_rp2350.py. Edit the RP2040 source, then regenerate.
+; Controls: the LAFVIN carrier's joystick (GP26/GP27, ADC) and two buttons (GP15 = A, GP14 = B,
+; active low), as the NES emulator reads them, plus keys over USB serial for tests.
+;   stick  -> the 4-way joystick          B      -> COIN 1
+;   A      -> 1 PLAYER START              A + B  -> 2 PLAYER START
+; The picture is portrait, so the stick's axes are turned with it (#MSP_STICK_TURN: 0 = the
+; carrier's landscape axes, 1 = turned a quarter turn, the way the board is held for a portrait
+; picture).
+;
+; USB keys (each held for 6 frames): w a s d = up left down right, 5 = coin, 1 = start 1,
+; 2 = start 2, t = the service (test) switch held while pressed again; 0 = release everything.
+;
+; Result: MspIn0 / MspIn1, active low, Ms. Pac-Man's IN0 ($5000) and IN1 ($5040):
+;   IN0: 1 up, 2 left, 4 right, 8 down, $10 rack test (off = 1), $20 coin 1, $40 coin 2, $80 service coin
+;   IN1: 1-8 the cocktail stick (unused), $10 service mode (off = 1), $20 start 1, $40 start 2,
+;        $80 cabinet (1 = upright)
+#MSP_UP = 1
+#MSP_LEFT = 2
+#MSP_RIGHT = 4
+#MSP_DOWN = 8
+#MSP_COIN = $20
+#MSP_START1 = $100
+#MSP_START2 = $200
+#MSP_SERVICE = $400
+Global InputX.i, InputY.i, InputButtons.i, InputCandidate.i, InputDebounce.i
+Global InputDirections.i, InputLast.i, InputPolls.i, InputErrors.i
+Global InputCenterX.i=2048, InputCenterY.i=2048
+Global InputHost.i, InputHostFrames.i, InputService.i
+Global MspIn0.i=$FF, MspIn1.i=$FF
+
+Procedure InputBegin()
+  pinMode(15,#INPUT_PULLUP) : pinMode(14,#INPUT_PULLUP)
+  analogReadResolution(12)
+  InputX=analogRead(26) : InputY=analogRead(27)
+  ; Only a plausible neutral position becomes the centre: a held stick cannot.
+  If InputX>1400 And InputX<2700 : InputCenterX=InputX : EndIf
+  If InputY>1400 And InputY<2700 : InputCenterY=4095-InputY : EndIf
+  InputLast=Micros()
+EndProcedure
+
+; x, y as the carrier reads them; engage at 750 counts from the centre, release at 450.
+Procedure InputStick(x.i, y.i)
+  Protected dirs.i, h.i, v.i
+  dirs=InputDirections
+  ; carrier axes: h = -1 left / +1 right, v = -1 up / +1 down (the NES's landscape directions)
+  h=0 : v=0
+  If x<InputCenterX-750 : h= -1 : ElseIf x>InputCenterX+750 : h=1 : ElseIf x>InputCenterX-450 And x<InputCenterX+450 : h=0 : Else : h=2 : EndIf
+  If y<InputCenterY-750 : v= -1 : ElseIf y>InputCenterY+750 : v=1 : ElseIf y>InputCenterY-450 And y<InputCenterY+450 : v=0 : Else : v=2 : EndIf
+  CompilerIf #MSP_STICK_TURN=1
+    ; a quarter turn clockwise of the board: carrier right is the picture's down, carrier down its left
+    If h<>2
+      dirs=dirs&~(#MSP_UP|#MSP_DOWN)
+      If h=1 : dirs=dirs|#MSP_DOWN : ElseIf h= -1 : dirs=dirs|#MSP_UP : EndIf
+    EndIf
+    If v<>2
+      dirs=dirs&~(#MSP_LEFT|#MSP_RIGHT)
+      If v=1 : dirs=dirs|#MSP_LEFT : ElseIf v= -1 : dirs=dirs|#MSP_RIGHT : EndIf
+    EndIf
+  CompilerElse
+    If h<>2
+      dirs=dirs&~(#MSP_LEFT|#MSP_RIGHT)
+      If h=1 : dirs=dirs|#MSP_RIGHT : ElseIf h= -1 : dirs=dirs|#MSP_LEFT : EndIf
+    EndIf
+    If v<>2
+      dirs=dirs&~(#MSP_UP|#MSP_DOWN)
+      If v=1 : dirs=dirs|#MSP_DOWN : ElseIf v= -1 : dirs=dirs|#MSP_UP : EndIf
+    EndIf
+  CompilerEndIf
+  InputDirections=dirs
+EndProcedure
+
+; A USB key (from the main loop's read), or -1.
+Procedure InputKey(key.i)
+  If key=119 : InputHost=#MSP_UP : InputHostFrames=6
+  ElseIf key=97 : InputHost=#MSP_LEFT : InputHostFrames=6
+  ElseIf key=115 : InputHost=#MSP_DOWN : InputHostFrames=6
+  ElseIf key=100 : InputHost=#MSP_RIGHT : InputHostFrames=6
+  ElseIf key=53 : InputHost=#MSP_COIN : InputHostFrames=6
+  ElseIf key=49 : InputHost=#MSP_START1 : InputHostFrames=6
+  ElseIf key=50 : InputHost=#MSP_START2 : InputHostFrames=6
+  ElseIf key=116 : InputService=InputService!1
+  ElseIf key=48 : InputHost=0 : InputHostFrames=0 : InputService=0
+  EndIf
+EndProcedure
+
+; Once a frame: read the carrier (unless disabled) and build IN0 / IN1.
+Procedure InputFrame()
+  Protected buttons.i, held.i, in0.i, in1.i
+  If #MSP_PHYSICAL_INPUT
+    InputX=analogReadChannel(0) : InputY=analogReadChannel(1)
+    buttons=(1-digitalRead(15))|((1-digitalRead(14))<<1)
+    If InputX<0 Or InputY<0
+      InputErrors=InputErrors+1
+    Else
+      InputStick(InputX,4095-InputY)
+    EndIf
+    If buttons<>InputCandidate
+      InputCandidate=buttons : InputDebounce=1
+    ElseIf InputDebounce<2
+      InputDebounce=InputDebounce+1
+    EndIf
+    If InputDebounce=2 : InputButtons=InputCandidate : EndIf
+    InputPolls=InputPolls+1
+  EndIf
+  held=InputDirections
+  If InputButtons=3 : held=held|#MSP_START2
+  ElseIf InputButtons=1 : held=held|#MSP_START1
+  ElseIf InputButtons=2 : held=held|#MSP_COIN
+  EndIf
+  If InputHostFrames>0
+    held=held|InputHost : InputHostFrames=InputHostFrames-1
+  EndIf
+  If InputService : held=held|#MSP_SERVICE : EndIf
+  in0=$FF : in1=$FF
+  in0=in0&~(held&$2F)
+  If held&#MSP_START1 : in1=in1&~$20 : EndIf
+  If held&#MSP_START2 : in1=in1&~$40 : EndIf
+  If held&#MSP_SERVICE : in1=in1&~$10 : EndIf
+  MspIn0=in0 : MspIn1=in1
+EndProcedure

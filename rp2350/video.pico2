@@ -1,0 +1,261 @@
+; Generated from rp2040/video.pico by tools/port_rp2350.py. Edit the RP2040 source, then regenerate.
+; Ms. Pac-Man video: the tile layer and eight sprites, drawn in the player's (portrait) orientation,
+; 224 x 288, from one frame's snapshot of video RAM, colour RAM and sprite registers.
+;
+; The arcade monitor is turned on its side (MAME: ROT90). Everything here is already turned:
+;   tile cell (x 0..27, y 0..35)  <- video RAM offset TileAddr(y*28+x)  (MAME pacman_scan_rows, rotated)
+;   tile pixel (lx, ly)           <- native pixel (px = ly, py = 7 - lx)
+;   sprite pixel (lx, ly)         <- native pixel (px = ly, py = 15 - lx)
+; Native sprite flips: x flip (bit 0) mirrors ly, y flip (bit 1) mirrors lx.
+;
+; The screen is sent in 36 strips of 224 x 8 (one tile row). Each strip is drawn into one of two
+; buffers while the other goes out over SPI by DMA (outputs as in the NES's ST7796 driver).
+; Everything a strip needs is a parameter or a read-only table, so core 0 can draw the same
+; strips for a frame dump (VideoDumpFrame) while core 1 owns the display.
+
+#VID_W = 224
+#VID_H = 288
+#VID_STRIP_PIXELS = 1792          ; 224 x 8
+#VID_X0 = 48                      ; the 224 x 288 picture centred on the 320 x 480 panel
+#VID_Y0 = 96
+#VID_SPI_DR = $40080008             ; SPI0: data, DMA control, status (RP2350 addresses)
+#VID_SPI_DMACR = $40080024
+#VID_SPI_SR = $4008000C
+#VID_TREQ_SHIFT = #SPI_DMA_TREQ_SHIFT
+
+; One frame's snapshot (written by core 0 at vertical blank, read by core 1).
+#SNAP_VRAM = 0                    ; 1024 bytes: $4000-$43FF
+#SNAP_CRAM = 1024                 ; 1024 bytes: $4400-$47FF
+#SNAP_SPR = 2048                  ; 16 bytes: $4FF0-$4FFF (code<<2 | yflip<<1 | xflip, colour)
+#SNAP_POS = 2064                  ; 16 bytes: $5060-$506F (x, y)
+#SNAP_FLIP = 2080                 ; the flip-screen latch
+#SNAP_BYTES = 2084
+
+; A frame's sprite list (VideoPrepare): up to 16 draws (8 sprites, each possibly twice for the
+; wraparound copy), 8 words each: code*256, colour*16, xflip, yflip, X0, Y0, -, -.
+#SPL_BYTES = 520                  ; word 0 = count, then 16 x 32 bytes
+
+Global Dim TileRow.u(2048)        ; 256 tiles x 8 rows: pixel lx in bits 2lx..2lx+1
+Global Dim SprPix.a(16384)        ; 64 sprites x 16 x 16, values 0..3
+Global Dim PairTab.l(512)         ; 32 colour sets x 16 pixel pairs: two RGB565, first in the low half
+Global Dim SprRgb.l(128)          ; 32 colour sets x 4: RGB565, or -1 where the pen is transparent
+Global Dim TileAddr.u(1008)       ; portrait cell -> video RAM offset
+Global Dim Palette.u(32)          ; the 82S123 colour PROM as RGB565
+Global Dim VidStrip.l(1792)        ; two strips (longs: the renderer writes pixel pairs)
+Global Dim VidSnap.a(4168)        ; two snapshots (#SNAP_BYTES each, the second at 2084)
+Global Dim VidSprites.l(130)       ; the sprite list (#SPL_BYTES)
+Global VidPublished.i             ; frames published by core 0 (the snapshot is VidPublished & 1)
+Global VidShown.i                 ; frames core 1 has finished sending
+Global VidDropped.i               ; frames core 0 published over one core 1 had not started
+Global VidRenderUs.i, VidSendWaitUs.i, VidFrames.i, VidError.i
+
+; Bits of a native gfx byte, MAME bit order (offset 0 is bit 7 of byte 0).
+Procedure.i VidNativeBit(base.i, offset.i)
+  ProcedureReturn (PeekA(base+(offset>>3))>>(7-(offset&7)))&1
+EndProcedure
+
+; MAME tilelayout: x offsets 64,65,66,67,0,1,2,3; y offsets 0,8,..,56; planes 0 (MSB) and 4.
+Procedure.i VidTilePixel(rom.i, tile.i, px.i, py.i)
+  Protected base.i, offset.i
+  base=rom+tile*16
+  offset=py*8+(px&3)
+  If px<4 : offset=offset+64 : EndIf
+  ProcedureReturn (VidNativeBit(base,offset)<<1)|VidNativeBit(base,offset+4)
+EndProcedure
+
+; MAME spritelayout: x offsets 64..67, 128..131, 192..195, 0..3; y offsets 0..56 then 256..312.
+Procedure.i VidSpritePixel(rom.i, sprite.i, px.i, py.i)
+  Protected base.i, offset.i, group.i
+  base=rom+sprite*64
+  group=px>>2
+  If group=0 : offset=64 : ElseIf group=1 : offset=128 : ElseIf group=2 : offset=192 : Else : offset=0 : EndIf
+  offset=offset+(px&3)+(py&7)*8
+  If py>=8 : offset=offset+256 : EndIf
+  ProcedureReturn (VidNativeBit(base,offset)<<1)|VidNativeBit(base,offset+4)
+EndProcedure
+
+Procedure.i VidRgb565(prom.i)
+  Protected r.i, g.i, b.i
+  r=((prom)&1)*$21+((prom>>1)&1)*$47+((prom>>2)&1)*$97
+  g=((prom>>3)&1)*$21+((prom>>4)&1)*$47+((prom>>5)&1)*$97
+  b=((prom>>6)&1)*$51+((prom>>7)&1)*$AE
+  ProcedureReturn ((r>>3)<<11)|((g>>2)<<5)|(b>>3)
+EndProcedure
+
+; Decode the graphics and colour PROMs into the tables above. tiles = 5E (4 KB), sprites = 5F
+; (4 KB), colours = 82S123 (32 bytes), lookup = 82S126 4A (256 bytes).
+Procedure VideoDecode(tiles.i, sprites.i, colours.i, lookup.i)
+  Protected t.i, lx.i, ly.i, row.i, x.i, y.i, set.i, pair.i, c0.i, c1.i, v.i, k.i
+  For t=0 To 255
+    For ly=0 To 7
+      row=0
+      For lx=0 To 7
+        row=row|(VidTilePixel(tiles,t,ly,7-lx)<<(lx*2))
+      Next
+      TileRow(t*8+ly)=row
+    Next
+    SafetyPet()
+  Next
+  For t=0 To 63
+    For ly=0 To 15
+      For lx=0 To 15
+        SprPix(t*256+ly*16+lx)=VidSpritePixel(sprites,t,ly,15-lx)
+      Next
+    Next
+    SafetyPet()
+  Next
+  For k=0 To 31 : Palette(k)=VidRgb565(PeekA(colours+k)) : Next
+  For set=0 To 31
+    For pair=0 To 15
+      c0=Palette(PeekA(lookup+set*4+(pair&3))&15)
+      c1=Palette(PeekA(lookup+set*4+(pair>>2))&15)
+      PairTab(set*16+pair)=c0|(c1<<16)
+    Next
+    For v=0 To 3
+      k=PeekA(lookup+set*4+v)&15
+      If k=0 : SprRgb(set*4+v)= -1 : Else : SprRgb(set*4+v)=Palette(k) : EndIf
+    Next
+  Next
+  ; MAME pacman_scan_rows on the native 36 x 28 map, turned: native column = y, row = 27 - x.
+  For y=0 To 35
+    For x=0 To 27
+      row=29-x
+      If y<2
+        TileAddr(y*28+x)=row+((30+y)<<5)
+      ElseIf y>33
+        TileAddr(y*28+x)=row+((y-34)<<5)
+      Else
+        TileAddr(y*28+x)=(y-2)+(row<<5)
+      EndIf
+    Next
+  Next
+EndProcedure
+
+; The frame's sprites in MAME's drawing order (7..3, then 2..0 one pixel over), each with its
+; wraparound copy 256 lines up, written to the list at spl.
+ProcedureRAM VideoPrepare(snap.i, spl.i)
+  Protected n.i, i.i, attr.i, sx.i, sy.i, p.i, count.i, copy.i
+  count=0
+  For i=7 To 0 Step -1
+    attr=PeekA(snap+#SNAP_SPR+i*2)
+    sx=272-PeekA(snap+#SNAP_POS+i*2+1)
+    sy=PeekA(snap+#SNAP_POS+i*2)-31
+    If i<=2 : sy=sy+1 : EndIf
+    For copy=0 To 1
+      p=spl+4+count*32
+      PokeL(p,(attr>>2)*256)
+      PokeL(p+4,(PeekA(snap+#SNAP_SPR+i*2+1)&31)*16)
+      PokeL(p+8,attr&1)
+      PokeL(p+12,(attr>>1)&1)
+      PokeL(p+16,208-sy)
+      PokeL(p+20,sx-copy*256)
+      count=count+1
+    Next
+  Next
+  PokeL(spl,count)
+EndProcedure
+
+; Strip ty (0..35) of the frame into dst (1792 RGB565 pixels).
+ProcedureRAM VideoRenderStrip(ty.i, dst.i, snap.i, spl.i)
+  Protected tx.i, a.i, src.i, pt.i, p.i, r.i, bits.i, cell.i
+  Protected n.i, e.i, top.i, y0.i, y1.i, y.i, x.i, x0.i, lx.i, ly.i, row.i, c.i, fy.i, colour.i, base.i
+  cell=ty*28
+  For tx=0 To 27
+    a=TileAddr(cell+tx)
+    src=@TileRow(0)+PeekA(snap+#SNAP_VRAM+a)*16
+    pt=@PairTab(0)+(PeekA(snap+#SNAP_CRAM+a)&31)*64
+    p=dst+tx*16
+    For r=0 To 7
+      bits=PeekU(src)
+      PokeL(p,PeekL(pt+((bits&15)<<2)))
+      PokeL(p+4,PeekL(pt+((bits>>2)&60)))
+      PokeL(p+8,PeekL(pt+((bits>>6)&60)))
+      PokeL(p+12,PeekL(pt+((bits>>10)&60)))
+      src=src+2 : p=p+448
+    Next
+  Next
+  ; Sprites: MAME clips them to native x 16..271, the picture's lines 16..271.
+  top=ty*8
+  If top<16 Or top>=272 : ProcedureReturn : EndIf
+  n=PeekL(spl)
+  For e=0 To n-1
+    base=spl+4+e*32
+    y0=PeekL(base+20)
+    If y0<=top+7 And y0+15>=top
+      y1=y0+15
+      y=y0
+      If y<top : y=top : EndIf
+      If y1>top+7 : y1=top+7 : EndIf
+      x0=PeekL(base+16) : colour=@SprRgb(0)+PeekL(base+4)
+      fy=PeekL(base+12)
+      While y<=y1
+        ly=y-y0
+        If PeekL(base+8) : ly=15-ly : EndIf
+        row=@SprPix(0)+PeekL(base)+ly*16
+        p=dst+((y-top)*224+x0)*2
+        For lx=0 To 15
+          x=x0+lx
+          If x>=0 And x<224
+            If fy : c=PeekA(row+15-lx) : Else : c=PeekA(row+lx) : EndIf
+            c=PeekL(colour+c*4)
+            If c>=0 : PokeU(p,c) : EndIf
+          EndIf
+          p=p+2
+        Next
+        y=y+1
+      Wend
+    EndIf
+  Next
+EndProcedure
+
+; ---- the panel (LAFVIN ST7796 on SPI0, as the NES's video_st7796) ----
+Procedure VideoBegin()
+  SpiPeriFromSys(#MSP_CLOCK_KHZ)
+  SpiBegin(0,2,3,-1,100000)
+  Tft796Begin(0,5,6,7) : Tft796Rotate(0) : Tft796Fill(0)
+EndProcedure
+
+ProcedureRAM VideoDmaStart(pointer.i)
+  PokeL(#SPI_DMA_CH0_READ,pointer)
+  PokeL(#SPI_DMA_CH0_WRITE,#VID_SPI_DR)
+  PokeL(#SPI_DMA_CH0_COUNT,#VID_STRIP_PIXELS)
+  PokeL(#SPI_DMA_CH0_CTRL,#SPI_DMA_EN|#SPI_DMA_SIZE_HALF|#SPI_DMA_INCR_READ|(#SPI_DMA_TREQ_SPI0_TX<<#VID_TREQ_SHIFT))
+EndProcedure
+
+; Wait for the strip in flight; 1 = done, 0 = the DMA hung (VidError says so).
+ProcedureRAM.i VideoDmaWait()
+  Protected start.i
+  start=Micros()
+  While (PeekL(#SPI_DMA_CH0_CTRL)&#SPI_DMA_BUSY)<>0
+    If Micros()-start>50000 : VidError=1 : ProcedureReturn 0 : EndIf
+  Wend
+  VidSendWaitUs=VidSendWaitUs+Micros()-start
+  ProcedureReturn 1
+EndProcedure
+
+Declare AudioPoll()
+; One whole frame to the panel, from snapshot snap. Core 1.
+ProcedureRAM VideoShowFrame(snap.i)
+  Protected ty.i, buf.i, start.i
+  start=Micros()
+  VideoPrepare(snap,@VidSprites(0))
+  Tft796Window(#VID_X0,#VID_Y0,#VID_X0+#VID_W-1,#VID_Y0+#VID_H-1)
+  SpiDmaInit() : SpiSetBits(0,16)
+  Tft796PinSet(tft796_dc,1) : Tft796PinSet(tft796_cs,0)
+  PokeL(#VID_SPI_DMACR,PeekL(#VID_SPI_DMACR)|#SPI_SSPDMACR_TXDMAE)
+  For ty=0 To 35
+    buf=@VidStrip(0)+(ty&1)*(#VID_STRIP_PIXELS*2)
+    VideoRenderStrip(ty,buf,snap,@VidSprites(0))
+    AudioPoll()
+    If ty>0
+      If VideoDmaWait()=0 : Break : EndIf
+    EndIf
+    VideoDmaStart(buf)
+  Next
+  VideoDmaWait()
+  While (PeekL(#VID_SPI_SR)&#SPI_SR_BSY)<>0 : Wend
+  SpiDmaRestore(0) : Tft796PinSet(tft796_cs,1)
+  If VidError : SpiDmaAbort(0) : SpiDmaRestore(0) : EndIf
+  VidRenderUs=VidRenderUs+Micros()-start
+  VidFrames=VidFrames+1
+EndProcedure

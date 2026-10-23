@@ -1,0 +1,29 @@
+# Build outputs (released firmware/*.uf2 are committed on purpose)
+*.uf2
+!firmware/*.uf2
+*.build.log
+*.board.log
+*.asm
+*.dbg
+*.sym
+*.sym.meta
+*.cycles.txt
+__pycache__/
+# Never commit the game's ROMs, a ROM pack, captured frames of the game, or a wrapper with a speaker address
+*.pack
+*.zip
+*.rom
+6e
+6f
+6h
+6j
+5e
+5f
+u5
+u6
+u7
+pacman.*
+82s1*
+my-*.picow
+my-*.pico2w
+captures/

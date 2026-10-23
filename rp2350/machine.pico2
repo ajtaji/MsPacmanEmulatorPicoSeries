@@ -1,0 +1,141 @@
+; Generated from rp2040/machine.pico by tools/port_rp2350.py. Edit the RP2040 source, then regenerate.
+; The Ms. Pac-Man machine around the Z80 core (Z80EmulatorPicoSeries, built with #Z80_MEM_HOOKS=1):
+; the memory map, the latches at $5000-$5007, the sound registers, the sprite positions, the
+; inputs and DIP switches, the watchdog and the vertical-blank interrupt.
+;
+; MAME's mspacman_map (src/mame/pacman/pacman.cpp), with its mirrors:
+;   $0000-$3FFF, $8000-$BFFF  ROM, the auxiliary board's decoded bank (romstore.pico): writes dropped
+;   $4000-$43FF  video RAM    $4400-$47FF colour RAM    $4800-$4BFF nothing: reads $BF, writes dropped
+;   $4C00-$4FEF  RAM          $4FF0-$4FFF sprite codes, flips and colours
+;   $5000-$5FFF  I/O (address bits 8-11 ignored): writes $00-$3F the latch (bit = address & 7),
+;                $40-$5F sound, $60-$6F sprite positions, $C0-$FF the watchdog; reads by bits 6-7:
+;                IN0, IN1, DSW1, DSW2 ($00)
+;   $6000-$7FFF, $C000-$FFFF  mirrors of $4000-$5FFF (address bits 13 and 15 ignored)
+;   I/O port 0 (write): the byte the interrupt puts on the bus - IM 2's vector
+; The decode latch (MAME's $0038/$03B0/.../$3FF8 traps) is not modelled: the decoded bank is
+; always in, as on the decrypted-ROM bootlegs that run the same program.
+; Latch bits: 0 interrupt enable (0 also drops a pending interrupt), 1 sound enable, 3 flip
+; screen, 4-5 lamps, 6 coin lockout, 7 coin counter.
+;
+; Timing: the Z80 at 3.072 MHz (18.432 MHz / 6), the frame 384 x 264 pixels at 6.144 MHz =
+; 16.5 ms (60.606 Hz) = 50,688 T-states. The interrupt is raised at vertical blank, once a frame,
+; when bit 0 of the latch is set. The watchdog resets the machine after 16 frames unwritten.
+
+#MSP_FRAME_TSTATES = 50688
+#MSP_FRAME_US = 16500
+#MSP_SLICES = 4
+
+Global MspLatch.i, MspIntVector.i, MspDsw1.i=$C9, MspDsw2.i=0
+Global MspWatchdog.i, MspWatchdogResets.i, MspRomWrites.i, MspInterrupts.i
+Global Dim MspSprPos.a(16)
+Global VidShowing.i= -1
+
+Procedure MachineMapPages()
+  Protected p.i
+  For p=0 To 255
+    Z80PageRd(p)=0 : Z80PageWr(p)=0
+    If p<$40 Or (p>=$80 And p<$C0) : Z80PageWr(p)=1 : EndIf
+    If p>=$48 And p<$4C : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
+    If (p>=$50 And p<$80) Or p>=$C0 : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
+  Next
+EndProcedure
+
+Procedure MachineLatch(bit.i, value.i)
+  If value : MspLatch=MspLatch|(1<<bit) : Else : MspLatch=MspLatch&~(1<<bit) : EndIf
+  If bit=0 And value=0 : Z80IntClear() : EndIf
+  If bit=1 : WsgEnabled=value : EndIf
+EndProcedure
+
+; Data reads of the pages flagged in Z80PageRd.
+Procedure.i Z80MemRead(addr.i)
+  Protected c.i, sel.i
+  c=addr&$5FFF
+  If c<$5000
+    If c>=$4800 And c<$4C00 : ProcedureReturn $BF : EndIf
+    ProcedureReturn Z80Mem(c)
+  EndIf
+  sel=(c>>6)&3
+  If sel=0 : ProcedureReturn MspIn0 : EndIf
+  If sel=1 : ProcedureReturn MspIn1 : EndIf
+  If sel=2 : ProcedureReturn MspDsw1 : EndIf
+  ProcedureReturn MspDsw2
+EndProcedure
+
+; Data writes of the pages flagged in Z80PageWr.
+Procedure Z80MemWrite(addr.i, value.i)
+  Protected c.i, o.i
+  If addr<$4000 Or (addr>=$8000 And addr<$C000)
+    MspRomWrites=MspRomWrites+1 : ProcedureReturn
+  EndIf
+  c=addr&$5FFF
+  If c<$5000
+    If c<$4800 Or c>=$4C00 : Z80Mem(c)=value : EndIf
+    ProcedureReturn
+  EndIf
+  o=c&255
+  If o<$40
+    MachineLatch(o&7,value&1)
+  ElseIf o<$60
+    WsgRegs(o-$40)=value&15
+  ElseIf o<$70
+    MspSprPos(o-$60)=value
+  ElseIf o>=$C0
+    MspWatchdog=0
+  EndIf
+EndProcedure
+
+Procedure.i Z80PortIn(port.i)
+  ProcedureReturn $FF
+EndProcedure
+
+Procedure Z80PortOut(port.i, value.i)
+  If (port&255)=0 : MspIntVector=value&255 : EndIf
+EndProcedure
+
+; Power-on: the Z80, the latches (all clear), the sound and the watchdog. ROM stays as built.
+Procedure MachineReset()
+  Protected i.i
+  For i=$4000 To $4FFF : Z80Mem(i)=0 : Next
+  For i=0 To 15 : MspSprPos(i)=0 : Next
+  For i=0 To 7 : MachineLatch(i,0) : Next
+  For i=0 To 31 : WsgRegs(i)=0 : Next
+  MspIntVector=0 : MspWatchdog=0
+  Z80Reset()
+EndProcedure
+
+; The frame's picture state to core 1: 0 when core 1 is still sending the buffer it would go in
+; (the frame is then not shown; the machine runs on).
+Procedure.i MachinePublish()
+  Protected n.i, s.i, dst.i, i.i
+  n=VidPublished+1
+  s=PeekL(@VidShowing)
+  If s>=0 And (s&1)=(n&1)
+    VidDropped=VidDropped+1 : ProcedureReturn 0
+  EndIf
+  dst=@VidSnap(0)+(n&1)*#SNAP_BYTES
+  For i=0 To 2047 : PokeA(dst+i,Z80Mem($4000+i)) : Next
+  For i=0 To 15
+    PokeA(dst+#SNAP_SPR+i,Z80Mem($4FF0+i))
+    PokeA(dst+#SNAP_POS+i,MspSprPos(i))
+  Next
+  PokeA(dst+#SNAP_FLIP,(MspLatch>>3)&1)
+  PokeL(@VidPublished,n)
+  ProcedureReturn 1
+EndProcedure
+
+; Vertical blank: the picture, the frame's sound, the controls, the watchdog, the interrupt.
+Procedure MachineVblank()
+  MachinePublish()
+  WsgRender(#WSG_FRAME_SAMPLES)
+  InputFrame()
+  MspWatchdog=MspWatchdog+1
+  If MspWatchdog>=16
+    MspWatchdogResets=MspWatchdogResets+1
+    Print("WATCHDOG: 16 frames without a write to $50C0 - machine reset (") : PrintDec(MspWatchdogResets) : PrintN(")")
+    MachineReset()
+    ProcedureReturn
+  EndIf
+  If MspLatch&1
+    Z80IntRequest(MspIntVector) : MspInterrupts=MspInterrupts+1
+  EndIf
+EndProcedure

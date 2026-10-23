@@ -1,0 +1,73 @@
+; Namco WSG (the Pac-Man sound chip): three voices, each a 32-step 4-bit waveform from the
+; 82S126 at 1M (eight waveforms), a 20-bit frequency (voices 1 and 2 have the low nibble 0) and a
+; 4-bit volume. The chip steps at 96 kHz (3.072 MHz / 32): counter += frequency, waveform
+; position = counter bits 15..19. Here two of those steps make one 48 kHz sample (their mean).
+; MAME src/devices/sound/namco.cpp, pacman_sound_w and namco_update_one: a voice with volume 0
+; does not advance; with sound disabled (latch bit 1 at $5001) nothing advances.
+;
+; Registers ($5040-$505F, low nibble only), offsets in WsgRegs:
+;   05/0A/0F waveform of voice 0/1/2   10..14 voice 0 frequency (10 = bits 0-3)
+;   15 voice 0 volume   16..19 voice 1 frequency (bits 4-19)   1A volume   1B..1E voice 2   1F volume
+; Core 0 writes WsgRegs as the program does and renders the frame's samples at vertical blank,
+; into the ring the Bluetooth sender reads (BtAudioSource) on core 1.
+
+#PCM_RING = 4096                    ; 85 ms at 48 kHz; a power of two
+#WSG_FRAME_SAMPLES = 792            ; 48000 x 16.5 ms: exactly one 60.606 Hz frame
+#WSG_GAIN = 32                      ; three voices of +-15x8, doubled by the two steps: +-23,040
+
+Global Dim WsgRegs.a(32)
+Global Dim WsgWave.w(256)           ; the waveform PROM's nibbles minus 8
+Global Dim WsgCounter.l(3)
+Global WsgEnabled.i
+Global Dim Pcm.w(#PCM_RING)
+Global PcmCount.l                   ; samples ever written (BtAudioSource reads this)
+Global WsgRenderUs.i
+
+Procedure WsgBegin(prom.i)
+  Protected i.i
+  For i=0 To 255 : WsgWave(i)=(PeekA(prom+i)&15)-8 : Next
+  For i=0 To 31 : WsgRegs(i)=0 : Next
+  For i=0 To 2 : WsgCounter(i)=0 : Next
+  WsgEnabled=0 : PcmCount=0
+EndProcedure
+
+; One voice's n samples added into the ring from position at.
+ProcedureRAM.l WsgVoice(at.i, n.i, wave.i, freq.i, vol.i, counter.l)
+  Protected i.i, s.i, slot.i
+  For i=0 To n-1
+    s=PeekW(wave+((counter>>14)&62))
+    counter=counter+freq
+    s=s+PeekW(wave+((counter>>14)&62))
+    counter=counter+freq
+    slot=@Pcm(0)+((at+i)&(#PCM_RING-1))*2
+    PokeW(slot,PeekW(slot)+s*vol*#WSG_GAIN)
+  Next
+  ProcedureReturn counter
+EndProcedure
+
+; The next n samples (n <= #PCM_RING / 2) from the registers as they stand.
+ProcedureRAM WsgRender(n.i)
+  Protected start.i, at.i, i.i, f.i, v.i
+  start=Micros()
+  at=PcmCount
+  For i=0 To n-1 : PokeW(@Pcm(0)+((at+i)&(#PCM_RING-1))*2,0) : Next
+  If WsgEnabled
+    v=WsgRegs($15)
+    If v
+      f=WsgRegs($10)|(WsgRegs($11)<<4)|(WsgRegs($12)<<8)|(WsgRegs($13)<<12)|(WsgRegs($14)<<16)
+      WsgCounter(0)=WsgVoice(at,n,@WsgWave(0)+(WsgRegs($05)&7)*64,f,v,WsgCounter(0))
+    EndIf
+    v=WsgRegs($1A)
+    If v
+      f=(WsgRegs($16)<<4)|(WsgRegs($17)<<8)|(WsgRegs($18)<<12)|(WsgRegs($19)<<16)
+      WsgCounter(1)=WsgVoice(at,n,@WsgWave(0)+(WsgRegs($0A)&7)*64,f,v,WsgCounter(1))
+    EndIf
+    v=WsgRegs($1F)
+    If v
+      f=(WsgRegs($1B)<<4)|(WsgRegs($1C)<<8)|(WsgRegs($1D)<<12)|(WsgRegs($1E)<<16)
+      WsgCounter(2)=WsgVoice(at,n,@WsgWave(0)+(WsgRegs($0F)&7)*64,f,v,WsgCounter(2))
+    EndIf
+  EndIf
+  PokeL(@PcmCount,at+n)
+  WsgRenderUs=WsgRenderUs+Micros()-start
+EndProcedure
