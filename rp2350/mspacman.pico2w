@@ -2,7 +2,7 @@
 ; Ms. Pac-Man for the Pico 2 W (RP2350) with the LAFVIN ST7796 kit.
 ; This published wrapper has no speaker address: the game runs silent. For sound, copy it OUTSIDE
 ; the repository, put the speaker's address in Speaker (as a phone shows it: AA:BB:CC:DD:EE:FF ->
-; Data.a $AA,$BB,$CC,$DD,$EE,$FF) and build the copy with -Source (tools/build.ps1); the copy's
+; Data.a $AA,$BB,$CC,$DD,$EE,$FF) and build the copy with --source (tools/build.py); the copy's
 ; folder must also reach this one's files, so it includes them by absolute path.
 #MSP_CLOCK_KHZ=150000
 #MSP_AUDIO=1
