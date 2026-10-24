@@ -13,6 +13,7 @@ turn (ROT90). It shares no code or tables with the firmware. Every pixel must ma
 The PNG is of the game's screen: keep it out of the repository (captures/ is ignored).
 """
 import argparse
+import re
 import struct
 import sys
 import time
@@ -132,10 +133,19 @@ def parse(stream):
         if line.startswith('SNAP '):
             snap = bytes.fromhex(line[5:])
         elif line.startswith('FRAME_BEGIN'):
-            data = stream.read(224 * 288 * 2)
-            if len(data) != 224 * 288 * 2:
-                raise SystemExit(f'frame cut short: {len(data)} bytes')
+            # read until the whole picture is in: one read() returns early when the serial
+            # timeout runs out, and a slow dump would then be taken for a short one
+            want = 224 * 288 * 2
+            data = b''
+            deadline = time.monotonic() + 60
+            while len(data) < want and time.monotonic() < deadline:
+                data += stream.read(want - len(data))
+            if len(data) != want:
+                raise SystemExit(f'frame cut short: {len(data)} bytes in 60 s')
             tail = b''.join(stream.readline() for _ in range(4))
+            dropped = re.search(rb'usb_dropped=(\d+)', tail)
+            if dropped:
+                print(f'board: usb_dropped={int(dropped.group(1))}')
             if b'FRAME_END' not in tail:
                 raise SystemExit('no FRAME_END after the picture (read after it: %r)' % tail[:200])
             px = struct.unpack('<%dH' % (224 * 288), data)

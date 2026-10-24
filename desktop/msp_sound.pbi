@@ -4,12 +4,12 @@
 ; Registers (WsgRegs, $5040-$505F low nibbles): 05/0A/0F waveforms, 10..14 voice 0 frequency,
 ; 15 volume, 16..19 voice 1 frequency (bits 4-19), 1A volume, 1B..1E voice 2, 1F volume.
 ;
-; Output: Windows waveOut, 48 kHz mono 16-bit, a ring of buffers of one frame (792 samples) each.
+; Output: Windows waveOut, 48 kHz mono 16-bit, a ring of 12 buffers of one frame (792 samples).
 
 EnableExplicit
 
 #WSG_GAIN = 32
-#SND_BUFFERS = 8
+#SND_BUFFERS = 12
 
 Global Dim WsgWave.w(255)
 Global Dim WsgCounter.l(2)
@@ -84,13 +84,11 @@ Procedure.i SoundPending()
   ProcedureReturn n
 EndProcedure
 
-; Queue this frame's samples. Returns 0 when every buffer is still playing (frame dropped).
-Procedure.i SoundQueue()
+; One buffer to the device: the frame's samples, or silence. 0 when the next buffer still plays.
+Procedure.i SoundSend(silent.i)
   Protected i.i = SndNext
-  If SndOpen = 0 : ProcedureReturn 0 : EndIf
   If (SndHeader(i)\dwFlags & #WHDR_DONE) = 0 : ProcedureReturn 0 : EndIf
-  If SoundPending() = 0 And SndQueued > 0 : SndUnderruns + 1 : EndIf
-  If SndMuted
+  If SndMuted Or silent
     FillMemory(*SndBuffer(i), #MSP_FRAME_SAMPLES * 2, 0)
   Else
     CopyMemory(@SndFrame(0), *SndBuffer(i), #MSP_FRAME_SAMPLES * 2)
@@ -99,6 +97,20 @@ Procedure.i SoundQueue()
   waveOutWrite_(SndDevice, @SndHeader(i), SizeOf(WAVEHDR))
   SndNext = (i + 1) % #SND_BUFFERS : SndQueued + 1
   ProcedureReturn 1
+EndProcedure
+
+; Queue this frame's samples. The frames are made at the real-time rate, so the queue holds
+; what it started with: it starts with #SND_CUSHION frames of silence, and when it has run dry
+; (an underrun - a pass came late) the cushion is put back the same way.
+#SND_CUSHION = 5
+Procedure.i SoundQueue()
+  Protected k.i
+  If SndOpen = 0 : ProcedureReturn 0 : EndIf
+  If SoundPending() = 0
+    If SndQueued > 0 : SndUnderruns + 1 : EndIf
+    For k = 1 To #SND_CUSHION : SoundSend(1) : Next
+  EndIf
+  ProcedureReturn SoundSend(0)
 EndProcedure
 
 Procedure SoundClose()

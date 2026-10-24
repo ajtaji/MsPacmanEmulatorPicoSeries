@@ -4,11 +4,14 @@
 ; BUILD (x64, from PowerShell, C back end):
 ;   & "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE
 ;       [/CONSTANT GL_ENGINE_DIR$=C:/path/to/engine/]   (default: the shared engine path below)
-;       [/CONSTANT MSP_Z80_CORE$=C:/path/to/desktop/z80.pbi]   (without it: the stand-in, no CPU)
+;       [/CONSTANT MSP_Z80_DIR$=C:/path/to/Z80EmulatorPicoSeries/desktop/]   (default: beside this repo)
 ; RUN:
 ;   MsPacman.exe [ROM folder]               the window (asks for the folder when none is given)
 ;   MsPacman.exe <ROM folder> --log N       no window: N frames, a log line per second, then exit
 ;   MsPacman.exe <ROM folder> --test-picture --dump <file> [--log N]
+;   MsPacman.exe <ROM folder> --press 600:coin,660:start,900:left ...   inputs held for 6 frames
+;                                           at those frames (coin start start2 up down left right)
+;   MsPacman.exe <ROM folder> --mute ...    starts with the sound muted (M toggles it)
 ;   MsPacman.exe <ROM folder> --shot <png> <frames>
 ;                                           the window for that many frames, then its picture
 ;                                           saved and the program closes by itself
@@ -33,30 +36,59 @@ XIncludeFile #GL_ENGINE_DIR$ + "GlUIChrome.pbi"
 UseCRC32Fingerprint()
 UsePNGImageEncoder()
 
-Declare.i Z80MemRead(addr.i)
-Declare Z80MemWrite(addr.i, value.i)
-Declare.i Z80PortIn(port.i)
-Declare Z80PortOut(port.i, value.i)
-CompilerIf Defined(MSP_Z80_CORE$, #PB_Constant)
-  XIncludeFile #MSP_Z80_CORE$
-CompilerElse
-  XIncludeFile "z80_standin.pbi"
+; The Z80 core and its disassembler: Z80EmulatorPicoSeries/desktop (the Pico core's handlers,
+; generated for PureBasic), found beside this repository unless MSP_Z80_DIR$ says where.
+CompilerIf Not Defined(MSP_Z80_DIR$, #PB_Constant)
+  #MSP_Z80_DIR$ = #PB_Compiler_FilePath + "../../Z80EmulatorPicoSeries/desktop/"
 CompilerEndIf
+#Z80_TIMED = 1
+#Z80_SHARED_TAIL = 0
+#Z80_MEM_HOOKS = 1
+#Z80_Q = 1
+#Z80_TRACK_R = 1
+XIncludeFile #MSP_Z80_DIR$ + "z80core.pbi"
+XIncludeFile #MSP_Z80_DIR$ + "z80disasm.pbi"
 XIncludeFile "msp_machine.pbi"
 XIncludeFile "msp_video.pbi"
 XIncludeFile "msp_sound.pbi"
-XIncludeFile "z80_disasm.pbi"
 
 ; ---------------------------------------------------------------------------
 ; The machine's frame
 ; ---------------------------------------------------------------------------
 Global EmuRunning.i = 1, EmuBreakOn.i, EmuBreakPC.i, EmuStopReason.s, EmuTDebt.i
 Global EmuTStates.q, EmuInstr.q, EmuFrameCount.q, EmuTestPicture.i
-Global EmuHeldKeys.i, EmuHostHeld.i
+Global EmuHeldKeys.i, EmuHostHeld.i, EmuPress.s, EmuPressBits.i, EmuPressUntil.q
+
+; --press: "frame:what" items; what = coin start start2 up down left right.
+Procedure EmuScriptInputs()
+  Protected n.i, i.i, item.s, at.q, what.s, bits.i
+  If EmuPress = "" : ProcedureReturn : EndIf
+  n = CountString(EmuPress, ",") + 1
+  For i = 1 To n
+    item = Trim(StringField(EmuPress, i, ","))
+    at = Val(StringField(item, 1, ":")) : what = LCase(StringField(item, 2, ":"))
+    If at = EmuFrameCount
+      Select what
+        Case "coin" : bits = $20
+        Case "start" : bits = $100
+        Case "start2" : bits = $200
+        Case "up" : bits = 1
+        Case "left" : bits = 2
+        Case "right" : bits = 4
+        Case "down" : bits = 8
+        Default : bits = 0
+      EndSelect
+      EmuPressBits = bits : EmuPressUntil = at + 6
+    EndIf
+  Next
+  If EmuFrameCount >= EmuPressUntil : EmuPressBits = 0 : EndIf
+EndProcedure
 
 ; IN0 / IN1 from the keys held (active low; see rp2040/input.pico for the bits).
 Procedure EmuInputs()
-  Protected in0.i = $FF, in1.i = $FF, k.i = EmuHostHeld
+  Protected in0.i = $FF, in1.i = $FF, k.i
+  EmuScriptInputs()
+  k = EmuHostHeld | EmuPressBits
   If k & 1 : in0 & ~1 : EndIf          ; up
   If k & 2 : in0 & ~2 : EndIf          ; left
   If k & 4 : in0 & ~4 : EndIf          ; right
@@ -123,7 +155,7 @@ Procedure EmuFrame()
     While EmuRunning
       EmuStep()
       If Z80PC = EmuBreakPC
-        EmuRunning = 0 : EmuStopReason = "breakpoint at " + DisHex4(EmuBreakPC)
+        EmuRunning = 0 : EmuStopReason = "breakpoint at " + "$" + Z80DisH4(EmuBreakPC)
       EndIf
       If EmuTDebt < 30 : Break : EndIf       ; a frame boundary has just passed
       If Z80Stopped : Break : EndIf
@@ -159,11 +191,7 @@ Procedure.i EmuDumpFrame(path.s)
 EndProcedure
 
 Procedure.s EmuCoreName()
-  CompilerIf Defined(Z80_STANDIN, #PB_Constant)
-    ProcedureReturn "STAND-IN CPU (no Z80 core built in)"
-  CompilerElse
-    ProcedureReturn "Z80 core"
-  CompilerEndIf
+  ProcedureReturn "Z80 core"
 EndProcedure
 
 Procedure.i EmuStart(folder.s)
@@ -192,7 +220,7 @@ Procedure LogRun(frames.i, dump.s)
       now = ElapsedMilliseconds()
       sec + 1
       PrintN("t=" + Str(sec) + " frames=" + Str(EmuFrameCount - lastF) + " tstates=" + Str(EmuTStates - lastT) +
-             " ints=" + Str(MspInterrupts) + " pc=" + DisHex4(Z80PC) + " banks=" + Str(MspBankSwitches) +
+             " ints=" + Str(MspInterrupts) + " pc=" + "$" + Z80DisH4(Z80PC) + " banks=" + Str(MspBankSwitches) +
              " decoded=" + Str(MspDecoded) + " watchdog=" + Str(MspWatchdogResets) + " host_ms=" + Str(now - t1))
       lastF = EmuFrameCount : lastT = EmuTStates : t1 = now
     EndIf
@@ -213,7 +241,11 @@ Global MouseDown.b, Wheel.i, KeyCode.i, KeyChar.i
 Global PhysW.i, PhysH.i, MemTab.i, MemTop.i, BreakText.String, BreakCaret.i
 Global FpsShown.f, FpsCount.i, FpsMark.q, SpeedTStates.q, SpeedMark.q, SpeedMHz.f
 Global GetDpiForWindow_.i, ShotPath.s, ShotFrames.i
+Global EmuWasPaused.i, PaceResyncs.i
+Global Dim PaneUs.q(7), Dim PaneShown.f(7)
+Global DrawUs.q, EmuUs.q, LoopCount.q, DrawUsShown.f, EmuUsShown.f, LoopsShown.f, QpcFreq.q
 Declare SaveWindowShot(path.s)
+Declare.q MicroNow()
 
 Procedure.f WindowScale(w.i)
   Protected dpi.i, lib.i
@@ -270,12 +302,12 @@ Procedure DrawRegisters(x.f, y.f, w.f, h.f)
   Protected lh.f = *Neon_FontMono\LineHeight, cx.f = x + Neon_S(12), cy.f = y + Neon_S(34)
   Protected tr.f = 0.85, tg.f = 0.9, tb.f = 0.95
   Neon_Panel(x, y, w, h, "Z80 - " + EmuCoreName(), 0.30, 0.85, 1.0, Neon_S(26))
-  Neon_Text(*Neon_FontMono, cx, cy, "PC " + DisHex4(Z80PC) + "  SP " + DisHex4(Z80SP) + "  AF " + DisHex4((Z80A << 8) | Z80F), tr, tg, tb) : cy + lh
-  Neon_Text(*Neon_FontMono, cx, cy, "BC " + DisHex4(Z80BC) + "  DE " + DisHex4(Z80DE) + "  HL " + DisHex4(Z80HL), tr, tg, tb) : cy + lh
-  Neon_Text(*Neon_FontMono, cx, cy, "IX " + DisHex4(Z80IX) + "  IY " + DisHex4(Z80IY) + "  I  " + DisHex2(Z80I), tr, tg, tb) : cy + lh
+  Neon_Text(*Neon_FontMono, cx, cy, "PC " + "$" + Z80DisH4(Z80PC) + "  SP " + "$" + Z80DisH4(Z80SP) + "  AF " + "$" + Z80DisH4((Z80A << 8) | Z80F), tr, tg, tb) : cy + lh
+  Neon_Text(*Neon_FontMono, cx, cy, "BC " + "$" + Z80DisH4(Z80BC) + "  DE " + "$" + Z80DisH4(Z80DE) + "  HL " + "$" + Z80DisH4(Z80HL), tr, tg, tb) : cy + lh
+  Neon_Text(*Neon_FontMono, cx, cy, "IX " + "$" + Z80DisH4(Z80IX) + "  IY " + "$" + Z80DisH4(Z80IY) + "  I  " + "$" + Z80DisH2(Z80I), tr, tg, tb) : cy + lh
   Neon_Text(*Neon_FontMono, cx, cy, "IM " + Str(Z80IM) + "  IFF1 " + Str(Z80IFF1) + "  HALT " + Str(Z80Halted) + "  flags " + Flags(Z80F), tr, tg, tb) : cy + lh
-  Neon_Text(*Neon_FontMono, cx, cy, "latch " + DisHex2(MspLatch) + "  vector " + DisHex2(MspIntVector) + "  bank " + StringField("pac-man,decoded", MspDecoded + 1, ","), tr, tg, tb) : cy + lh
-  Neon_Text(*Neon_FontMono, cx, cy, "IN0 " + DisHex2(MspIn0) + "  IN1 " + DisHex2(MspIn1) + "  DSW1 " + DisHex2(MspDsw1) + "  watchdog " + Str(MspWatchdogResets), tr, tg, tb)
+  Neon_Text(*Neon_FontMono, cx, cy, "latch " + "$" + Z80DisH2(MspLatch) + "  vector " + "$" + Z80DisH2(MspIntVector) + "  bank " + StringField("pac-man,decoded", MspDecoded + 1, ","), tr, tg, tb) : cy + lh
+  Neon_Text(*Neon_FontMono, cx, cy, "IN0 " + "$" + Z80DisH2(MspIn0) + "  IN1 " + "$" + Z80DisH2(MspIn1) + "  DSW1 " + "$" + Z80DisH2(MspDsw1) + "  watchdog " + Str(MspWatchdogResets), tr, tg, tb)
 EndProcedure
 
 Procedure DrawDisassembly(x.f, y.f, w.f, h.f)
@@ -340,11 +372,18 @@ Procedure DrawControls(x.f, y.f, w.f, h.f)
   Neon_Text(*Neon_FontUI, gx, gy, StrF(FpsShown, 2) + " frames/s   Z80 " + StrF(SpeedMHz, 3) + " MHz   sound: " +
             StringField("none,playing,muted", 1 + SndOpen + Bool(SndOpen And SndMuted), ",") +
             "   underruns " + Str(SndUnderruns) + "   bank switches " + Str(MspBankSwitches), 0.7, 0.9, 0.7)
-  If EmuStopReason <> "" : Neon_Text(*Neon_FontUI, gx, gy + *Neon_FontUI\LineHeight, "Stopped: " + EmuStopReason, 1.0, 0.6, 0.4) : EndIf
+  Neon_Text(*Neon_FontSmall, gx, gy + *Neon_FontUI\LineHeight, "window: " + StrF(LoopsShown, 0) + " passes/s, drawing " + StrF(DrawUsShown / 1000.0, 2) + " ms a pass, emulating " + StrF(EmuUsShown / 1000.0, 1) + " ms/s, resyncs " + Str(PaceResyncs) + "   ms: begin " + StrF(PaneShown(6), 2) + " screen " + StrF(PaneShown(0), 2) + " run " + StrF(PaneShown(1), 2) + " regs " + StrF(PaneShown(2), 2) + " dis " + StrF(PaneShown(3), 2) + " mem " + StrF(PaneShown(4), 2) + " flip " + StrF(PaneShown(5), 2), 0.55, 0.65, 0.75)
+  If EmuStopReason <> "" : Neon_Text(*Neon_FontUI, gx, gy + 2 * *Neon_FontUI\LineHeight, "Stopped: " + EmuStopReason, 1.0, 0.6, 0.4) : EndIf
 EndProcedure
 
+Global SizedW.i = -1, SizedH.i = -1
+
+; The size globals - only when the window's size changed (resizing the gadget every pass costs
+; a relayout each time).
 Procedure SizeGlobals()
   Protected client.RECT, cw.i = WindowWidth(Win), ch.i = WindowHeight(Win)
+  If cw = SizedW And ch = SizedH : ProcedureReturn : EndIf
+  SizedW = cw : SizedH = ch
   ResizeGadget(Gl, 0, 0, cw, ch)
   GetClientRect_(WindowID(Win), @client)
   PhysW = client\right - client\left : PhysH = client\bottom - client\top
@@ -359,7 +398,8 @@ EndProcedure
 
 Procedure DrawWindow()
   Protected margin.f = Neon_S(12), sc.i, sw.f, sh.f, px.f, rx.f, rw.f, y.f, hh.f
-  SetGadgetAttribute(Gl, #PB_OpenGL_SetContext, #True)
+  Protected tp.q = MicroNow()
+  ; one window, one GL context: it is made current once, in WindowRun (doing it every pass cost ~7 ms)
   SizeGlobals()
   Neon_ChromeBeginFrame(WindowMouseX(Win), WindowMouseY(Win), MouseDown, Wheel, KeyCode, KeyChar, 1.0 / 60.0)
   glBindFramebuffer(#GL_FRAMEBUFFER, 0)
@@ -373,20 +413,27 @@ Procedure DrawWindow()
   sw = #VID_W * sc : sh = #VID_H * sc
   px = margin : y = (PhysH - sh) / 2
   Neon_Box(px - 2, y - 2, sw + 4, sh + 4, 0.15, 0.20, 0.30)
+  PaneUs(6) + MicroNow() - tp : tp = MicroNow()
   ScreenTextureUpload()
   ; DrawGLSprite's position is the drawn rectangle's top-left at any scale
   DrawGLSprite(@ScreenSprite, px, y, 0.0, sc, 1.0, 1.0, 1.0, 1.0, #True, -1, -1, -1, -1, #True)
   ; the debug panes
   rx = px + sw + margin : rw = PhysW - rx - margin
   hh = Neon_S(150)
+  PaneUs(0) + MicroNow() - tp : tp = MicroNow()
   DrawControls(rx, margin, rw, hh)
+  PaneUs(1) + MicroNow() - tp : tp = MicroNow()
   DrawRegisters(rx, margin + hh + margin, rw, Neon_S(190))
+  PaneUs(2) + MicroNow() - tp : tp = MicroNow()
   y = margin + hh + margin + Neon_S(190) + margin
   DrawDisassembly(rx, y, rw * 0.5 - margin / 2, PhysH - y - margin)
+  PaneUs(3) + MicroNow() - tp : tp = MicroNow()
   DrawMemory(rx + rw * 0.5 + margin / 2, y, rw * 0.5 - margin / 2, PhysH - y - margin)
+  PaneUs(4) + MicroNow() - tp : tp = MicroNow()
   Neon_ChromeEndFrame()
   If ShotPath <> "" And EmuFrameCount >= ShotFrames : SaveWindowShot(ShotPath) : ShotFrames = -1 : EndIf
   SetGadgetAttribute(Gl, #PB_OpenGL_FlipBuffers, #True)
+  PaneUs(5) + MicroNow() - tp
   Wheel = 0 : KeyCode = 0 : KeyChar = 0
 EndProcedure
 
@@ -424,8 +471,15 @@ Procedure SaveWindowShot(path.s)
   FreeMemory(*px)
 EndProcedure
 
+Procedure.q MicroNow()
+  Protected c.q
+  If QpcFreq = 0 : QueryPerformanceFrequency_(@QpcFreq) : EndIf
+  QueryPerformanceCounter_(@c)
+  ProcedureReturn c * 1000000 / QpcFreq
+EndProcedure
+
 Procedure WindowRun(folder.s)
-  Protected ev.i, quit.i, frames.i, nextMs.d, now.d, ok.i
+  Protected ev.i, quit.i, frames.i, ok.i, nowUs.q, paceStart.q, paceFrames.q, i.i
   ExamineDesktops()
   Gl = OpenGLWindow("Ms. Pac-Man - PureMetal desktop (" + EmuCoreName() + ")", 1280, 820,
                     #PB_Window_SystemMenu | #PB_Window_ScreenCentered | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_SizeGadget)
@@ -433,10 +487,10 @@ Procedure WindowRun(folder.s)
   Win = Util_MainWindowID
   UiScale = WindowScale(Win) : BuildFonts()
   GL_SetVSync(1)
+  SetGadgetAttribute(Gl, #PB_OpenGL_SetContext, #True)
   ScreenTextureInit()
   ok = SoundOpen()
   SetActiveGadget(Gl)
-  nextMs = ElapsedMilliseconds()
   FpsMark = ElapsedMilliseconds() : SpeedMark = FpsMark
   Repeat
     Repeat
@@ -466,30 +520,34 @@ Procedure WindowRun(folder.s)
       EndSelect
     Until ev = 0
     EmuHostHeld = HostKeys() | EmuHeldKeys
+    Protected t0.q = MicroNow()
     If EmuRunning
-      ; paced by the sound device's clock (48,000 samples a second = 60.606 frames) when it is
-      ; open, else by the millisecond timer
+      ; Paced by the PC's performance counter: frame n is due at n x 16,500 us (60.606 a second).
+      ; A slow pass is caught up (up to 6 frames at once); further behind than that, the clock is
+      ; moved instead of racing. The sound queue (8 frames) is the cushion between the two clocks.
       frames = 0
-      If SndOpen
-        While EmuRunning And SoundPending() < 3 And frames < 6
-          EmuFrame() : frames + 1 : FpsCount + 1 : EmuHeldKeys = 0
-        Wend
-      Else
-        now = ElapsedMilliseconds()
-        While EmuRunning And now >= nextMs And frames < 6
-          EmuFrame() : frames + 1 : FpsCount + 1 : nextMs + 16.5 : EmuHeldKeys = 0
-        Wend
-        If now - nextMs > 200 : nextMs = now : EndIf
-      EndIf
+      nowUs = MicroNow()
+      If paceStart = 0 Or EmuWasPaused : paceStart = nowUs - paceFrames * 16500 : EmuWasPaused = 0 : EndIf
+      While EmuRunning And (nowUs - paceStart) >= paceFrames * 16500 And frames < 6
+        EmuFrame() : frames + 1 : FpsCount + 1 : paceFrames + 1 : EmuHeldKeys = 0
+      Wend
+      If (nowUs - paceStart) - paceFrames * 16500 > 200000 : paceStart = nowUs - paceFrames * 16500 : PaceResyncs + 1 : EndIf
     Else
-      nextMs = ElapsedMilliseconds()
+      EmuWasPaused = 1
     EndIf
+    EmuUs + MicroNow() - t0
     If ElapsedMilliseconds() - FpsMark >= 1000
+      DrawUsShown = DrawUs / (LoopCount + 0.001) : EmuUsShown = EmuUs * 1000.0 / (ElapsedMilliseconds() - FpsMark)
+      LoopsShown = LoopCount * 1000.0 / (ElapsedMilliseconds() - FpsMark)
+      For i = 0 To 6 : PaneShown(i) = PaneUs(i) / (LoopCount + 0.001) / 1000.0 : PaneUs(i) = 0 : Next
+      DrawUs = 0 : EmuUs = 0 : LoopCount = 0
       FpsShown = FpsCount * 1000.0 / (ElapsedMilliseconds() - FpsMark)
       SpeedMHz = (EmuTStates - SpeedTStates) / 1000.0 / (ElapsedMilliseconds() - SpeedMark)
       FpsCount = 0 : FpsMark = ElapsedMilliseconds() : SpeedTStates = EmuTStates : SpeedMark = FpsMark
     EndIf
+    t0 = MicroNow()
     DrawWindow()
+    DrawUs + MicroNow() - t0 : LoopCount + 1
     If ShotFrames = -1 : quit = 1 : EndIf
   Until quit
   SoundClose()
@@ -502,6 +560,8 @@ For i = 0 To CountProgramParameters() - 1
     Case "--log" : i + 1 : logFrames = Val(ProgramParameter(i))
     Case "--dump" : i + 1 : dump = ProgramParameter(i)
     Case "--test-picture" : EmuTestPicture = 1
+    Case "--press" : i + 1 : EmuPress = ProgramParameter(i)
+    Case "--mute" : SndMuted = 1
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))
     Default : folder = ProgramParameter(i)
   EndSelect

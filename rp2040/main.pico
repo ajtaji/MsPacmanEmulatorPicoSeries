@@ -87,25 +87,41 @@ Procedure Serve()
   UsbSerialTask() : SafetyPet()
 EndProcedure
 
+; One byte of a dump, never dropped: wait for room in the USB staging buffer first (a plain
+; UsbSerialWrite drops a byte when the buffer is full and the last packet is still out).
+Procedure DumpByte(v.i)
+  Protected start.i
+  start=Micros()
+  While UsbSerialWriteRoom()=0
+    UsbSerialFlush() : UsbSerialTask() : SafetyPet()
+    If Micros()-start>2000000 : ProcedureReturn : EndIf
+  Wend
+  UsbSerialWrite(v)
+EndProcedure
+
 ; The latest published frame's picture over USB serial (core 1 keeps showing it meanwhile).
 Procedure DumpFrame()
   Protected snap.i, ty.i, i.i, v.i
   snap=@VidSnap(0)+(PeekL(@VidPublished)&1)*#SNAP_BYTES
   VideoPrepare(snap,@DumpSprites(0))
   ; the snapshot it is drawn from, so tools/grab.py can draw it independently and compare
-  Print("SNAP ")
-  For i=0 To #SNAP_BYTES-1 : PrintHex(PeekA(snap+i),2) : Next
-  PrintN("")
+  DumpByte(83) : DumpByte(78) : DumpByte(65) : DumpByte(80) : DumpByte(32)    ; "SNAP "
+  For i=0 To #SNAP_BYTES-1
+    v=PeekA(snap+i)>>4 : If v<10 : DumpByte(48+v) : Else : DumpByte(55+v) : EndIf
+    v=PeekA(snap+i)&15 : If v<10 : DumpByte(48+v) : Else : DumpByte(55+v) : EndIf
+  Next
+  DumpByte(13) : DumpByte(10)
   PrintN("FRAME_BEGIN 224 288")
   For ty=0 To 35
     VideoRenderStrip(ty,@DumpStrip(0),snap,@DumpSprites(0))
     For i=0 To 1791
       v=PeekU(@DumpStrip(0)+i*2)
-      UsbSerialWrite(v&255) : UsbSerialWrite(v>>8)
+      DumpByte(v&255) : DumpByte(v>>8)
     Next
     Serve()
   Next
   PrintN("") : PrintN("FRAME_END")
+  Print("usb_dropped=") : PrintDec(usbser_dropped) : PrintN("")
 EndProcedure
 
 Procedure PrintZ80()
