@@ -29,3 +29,8 @@ my-*.pico2w
 captures/
 # Local builds (a released, board-tested image is copied into firmware/ by hand)
 build/
+# the demo's build outputs (rebuilt from demo.pacman and make_assets.py)
+demo/*.bin
+demo/*.hex
+demo/*.slots.txt
+demo/demo_roms/
