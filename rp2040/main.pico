@@ -99,7 +99,7 @@ Procedure DumpFrame()
     v=PeekA(snap+i)&15 : If v<10 : UsbSerialWrite(48+v) : Else : UsbSerialWrite(55+v) : EndIf
   Next
   UsbSerialWrite(13) : UsbSerialWrite(10)
-  PrintN("FRAME_BEGIN 224 288")
+  Print("FRAME_BEGIN 224 288 dtr=") : PrintDec(usbser_dtr) : Print(" usb_dropped_before=") : PrintDec(usbser_dropped) : PrintN("")
   For ty=0 To 35
     VideoRenderStrip(ty,@DumpStrip(0),snap,@DumpSprites(0))
     For i=0 To 1791

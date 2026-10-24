@@ -126,6 +126,8 @@ def write_png(path, pixels):
     path.write_bytes(png)
 
 
+GRAB_SETTLE = float(__import__('os').environ.get('GRAB_SETTLE', '0'))
+ROMS_FOR_CHECK = None                                       # set by main(): to locate a gap
 MARKER = bytes([13, 10]) + b'FRAME_END' + bytes([13, 10])   # CR LF FRAME_END CR LF
 
 
@@ -140,6 +142,8 @@ def parse(stream):
         if line.startswith('SNAP '):
             snap = bytes.fromhex(line[5:])
         elif line.startswith('FRAME_BEGIN'):
+            if 'dtr=' in line:
+                print('board: ' + line[len('FRAME_BEGIN 224 288 '):])
             # everything up to FRAME_END, then check its length: a short or long picture is
             # reported with the count, never drawn shifted
             want = 224 * 288 * 2
@@ -160,6 +164,14 @@ def parse(stream):
                 print(f'board: usb_dropped={int(dropped.group(1))}')
             if end < 0 or end != want:
                 Path('grab-stream.bin').write_bytes(buf)
+                if snap is not None:
+                    Path('grab-stream.snap').write_bytes(snap)
+                if snap is not None and ROMS_FOR_CHECK is not None and end > 0:
+                    ref = reference(ROMS_FOR_CHECK, snap)
+                    rb = b''.join(struct.pack('<224H', *row) for row in ref)
+                    first = next((k for k in range(min(end, want)) if buf[k] != rb[k]), None)
+                    print(f'the board bytes first differ from the reference at byte {first} '
+                          f'(strip {None if first is None else first // 3584}, offset {None if first is None else first % 3584})')
                 raise SystemExit(f'the picture was {end} bytes, not {want} (stream kept in grab-stream.bin)')
             data = buf[:want]
             px = struct.unpack('<%dH' % (224 * 288), data)
@@ -169,6 +181,8 @@ def parse(stream):
 def grab(port):
     import serial
     link = serial.Serial(port, 115200, timeout=5)
+    if GRAB_SETTLE:
+        time.sleep(GRAB_SETTLE)        # let the board see the port open before asking
     link.reset_input_buffer()
     link.write(b'p')
     return parse(link)
@@ -182,6 +196,8 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     a = p.parse_args()
     roms = load_set(a.roms)
+    global ROMS_FOR_CHECK
+    ROMS_FOR_CHECK = roms
     if a.file:
         with a.file.open('rb') as f:
             snap, board = parse(f)

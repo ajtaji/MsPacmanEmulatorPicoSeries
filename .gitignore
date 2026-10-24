@@ -34,3 +34,5 @@ demo/*.bin
 demo/*.hex
 demo/*.slots.txt
 demo/demo_roms/
+grab-stream.bin
+grab-stream.snap
