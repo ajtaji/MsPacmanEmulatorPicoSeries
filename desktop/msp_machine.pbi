@@ -28,7 +28,7 @@ Global Dim RomName.s(#ROM_COUNT - 1)
 Global Dim RomSize.i(#ROM_COUNT - 1)
 Global Dim RomCrc.l(#ROM_COUNT - 1)
 Global Dim *RomData(#ROM_COUNT - 1)
-Global RomError.s
+Global RomError.s, RomPlain.i         ; RomPlain: a plain Pac-Man hardware set (no auxiliary board)
 
 Procedure RomTable()
   Protected i.i, n.s, sz.i, c.s
@@ -44,6 +44,8 @@ Procedure.l Crc32Of(*mem, size.i)
 EndProcedure
 
 ; Every file of the set from a folder (by CRC-32, any names). 1 = all there; else RomError says.
+; A folder without u5/u6/u7 that holds the nine plain Pac-Man hardware files BY NAME (a program
+; built for the compiler's Pac-Man board, tools/pacman_assets.py) is taken as a plain set.
 Procedure.i RomLoadFolder(folder.s)
   Protected dir.i, path.s, f.i, size.i, *buf, crc.l, i.i, missing.s
   RomTable()
@@ -78,7 +80,24 @@ Procedure.i RomLoadFolder(folder.s)
     EndIf
   Wend
   FinishDirectory(dir)
+  RomPlain = 0
+  If *RomData(#ROM_U5) = 0 And *RomData(#ROM_U6) = 0 And *RomData(#ROM_U7) = 0 And FileSize(folder + "pacman.6e") = $1000
+    RomPlain = 1
+    For i = 0 To #ROM_COUNT - 1
+      If i = #ROM_U5 Or i = #ROM_U6 Or i = #ROM_U7 : Continue : EndIf
+      If *RomData(i) : FreeMemory(*RomData(i)) : *RomData(i) = 0 : EndIf
+      If FileSize(folder + RomName(i)) = RomSize(i)
+        f = ReadFile(#PB_Any, folder + RomName(i))
+        If f
+          *RomData(i) = AllocateMemory(RomSize(i))
+          ReadData(f, *RomData(i), RomSize(i))
+          CloseFile(f)
+        EndIf
+      EndIf
+    Next
+  EndIf
   For i = 0 To #ROM_COUNT - 1
+    If RomPlain And (i = #ROM_U5 Or i = #ROM_U6 Or i = #ROM_U7) : Continue : EndIf
     If *RomData(i) = 0 : missing + " " + RomName(i) : EndIf
   Next
   If missing <> ""
@@ -112,6 +131,17 @@ EndProcedure
 Procedure RomBuildBanks()
   Protected i.i, p.i, dst.i, src.i
   Dim d.a($FFFF)
+  If RomPlain
+    ; plain Pac-Man hardware: the four ROMs at $0000-$3FFF and again at $8000 (A15 not decoded),
+    ; the same in both "banks" - there is no auxiliary board to switch
+    For i = 0 To $FFF
+      BankRom(0, i) = RomByte(#ROM_6E, i) : BankRom(0, $1000 + i) = RomByte(#ROM_6F, i)
+      BankRom(0, $2000 + i) = RomByte(#ROM_6H, i) : BankRom(0, $3000 + i) = RomByte(#ROM_6J, i)
+    Next
+    For i = 0 To $3FFF : BankRom(0, $4000 + i) = BankRom(0, i) : Next
+    For i = 0 To $7FFF : BankRom(1, i) = BankRom(0, i) : Next
+    ProcedureReturn
+  EndIf
   For i = 0 To $FFF
     d(i) = RomByte(#ROM_6E, i) : d($1000 + i) = RomByte(#ROM_6F, i) : d($2000 + i) = RomByte(#ROM_6H, i)
     d($3000 + i) = RomDataSwap(RomByte(#ROM_U7, RomSwap12(i)))
@@ -157,6 +187,7 @@ Procedure MachineSetBank(decoded.i)
 EndProcedure
 
 Procedure.i MachineTrap(addr.i)
+  If RomPlain : ProcedureReturn -1 : EndIf
   If addr >= $3FF8 And addr <= $3FFF : ProcedureReturn 1 : EndIf
   If (addr >= $0038 And addr <= $003F) Or (addr >= $03B0 And addr <= $03B7) Or (addr >= $1600 And addr <= $1607) Or
      (addr >= $2120 And addr <= $2127) Or (addr >= $3FF0 And addr <= $3FF7) Or (addr >= $8000 And addr <= $8007) Or (addr >= $97F0 And addr <= $97F7)
@@ -170,7 +201,7 @@ Procedure MachineMapPages()
   For p = 0 To 255
     Z80PageRd(p) = 0 : Z80PageWr(p) = 0
     If p < $40 Or (p >= $80 And p < $C0) : Z80PageWr(p) = 1 : EndIf
-    If p = $00 Or p = $03 Or p = $16 Or p = $21 Or p = $3F Or p = $80 Or p = $97 : Z80PageRd(p) = 1 : EndIf
+    If RomPlain = 0 And (p = $00 Or p = $03 Or p = $16 Or p = $21 Or p = $3F Or p = $80 Or p = $97) : Z80PageRd(p) = 1 : EndIf
     If p >= $48 And p < $4C : Z80PageRd(p) = 1 : Z80PageWr(p) = 1 : EndIf
     If (p >= $50 And p < $80) Or p >= $C0 : Z80PageRd(p) = 1 : Z80PageWr(p) = 1 : EndIf
   Next

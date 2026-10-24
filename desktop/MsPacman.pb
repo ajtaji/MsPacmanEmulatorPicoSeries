@@ -8,6 +8,7 @@
 ; RUN:
 ;   MsPacman.exe [ROM folder]               the window (asks for the folder when none is given)
 ;   MsPacman.exe <ROM folder> --log N       no window: N frames, a log line per second, then exit
+;                                           (--log-every F: a line every F frames)
 ;   MsPacman.exe <ROM folder> --test-picture --dump <file> [--log N]
 ;   MsPacman.exe <ROM folder> --press 600:coin,660:start,900:left ...   inputs held for 6 frames
 ;                                           at those frames (coin start start2 up down left right)
@@ -207,6 +208,7 @@ EndProcedure
 ; ---------------------------------------------------------------------------
 ; --log: no window
 ; ---------------------------------------------------------------------------
+Global LogEvery.i = 61
 Procedure LogRun(frames.i, dump.s)
   Protected n.i, t0.q, t1.q, lastT.q, lastI.q, lastF.q, now.q, sec.i
   OpenConsole()
@@ -216,7 +218,7 @@ Procedure LogRun(frames.i, dump.s)
   t0 = ElapsedMilliseconds() : t1 = t0
   For n = 1 To frames
     EmuFrame()
-    If n % 61 = 0
+    If n % LogEvery = 0
       now = ElapsedMilliseconds()
       sec + 1
       PrintN("t=" + Str(sec) + " frames=" + Str(EmuFrameCount - lastF) + " tstates=" + Str(EmuTStates - lastT) +
@@ -562,6 +564,7 @@ For i = 0 To CountProgramParameters() - 1
     Case "--test-picture" : EmuTestPicture = 1
     Case "--press" : i + 1 : EmuPress = ProgramParameter(i)
     Case "--mute" : SndMuted = 1
+    Case "--log-every" : i + 1 : LogEvery = Val(ProgramParameter(i)) : If LogEvery < 1 : LogEvery = 1 : EndIf
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))
     Default : folder = ProgramParameter(i)
   EndSelect

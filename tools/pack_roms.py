@@ -1,6 +1,12 @@
 """Pack a Ms. Pac-Man ROM set into the flash image the firmware reads.
 
     py -3 tools/pack_roms.py <folder-or-zip> -o <private folder>/mspacman.pack
+    py -3 tools/pack_roms.py --plain <folder> -o <folder>/demo.pack
+
+--plain packs a set for PLAIN Pac-Man hardware - a program built for the compiler's Pac-Man
+board (.pacman: pacman.6e .. pacman.6j, and 5e, 5f, 82s123.7f, 82s126.4a, 82s126.1m from
+tools/pacman_assets.py) - taken by FILE NAME, with no auxiliary board: the firmware then maps
+the four program ROMs at $0000 and $8000 and does no decryption or patching (pack version 2).
 
 The files are found by CRC-32, not by name, so a MAME set under any file
 names works. Every file of the set must be present and whole; a missing or
@@ -50,6 +56,10 @@ SET = [
 ]
 MAGIC = b'MSPK'
 VERSION = 1
+VERSION_PLAIN = 2
+# version 2: these, in this order, by name (rp2040/romstore.pico reads them by position)
+PLAIN = [('pacman.6e', 0x1000), ('pacman.6f', 0x1000), ('pacman.6h', 0x1000), ('pacman.6j', 0x1000),
+         ('5e', 0x1000), ('5f', 0x1000), ('82s123.7f', 0x0020), ('82s126.4a', 0x0100), ('82s126.1m', 0x0100)]
 ENTRY = 32
 HEADER = 16
 
@@ -117,11 +127,57 @@ def decoded_space(files):
     return d
 
 
+def write_pack(args, version, roles):
+    """roles: (name, bytes) in pack order. Writes the pack and its --flash-assets manifests."""
+    table, body = bytearray(), bytearray()
+    first = HEADER + ENTRY * len(roles)
+    for name, data in roles:
+        table += struct.pack('<16sIIII', name.encode(), first + len(body), len(data), zlib.crc32(data), 0)
+        body += data
+    payload = bytes(table + body)
+    pack = MAGIC + struct.pack('<HHII', version, len(roles), HEADER + len(payload), zlib.crc32(payload)) + payload
+    if len(pack) > PACK_LIMIT:
+        raise SystemExit(f'Pack is {len(pack)} bytes; the store holds {PACK_LIMIT}')
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_bytes(pack)
+    padded = pack + bytes(-len(pack) % 256)
+    for chip, capacity, name in (('rp2040', 2 * 1024 * 1024, 'assets-rp2040.json'),
+                                 ('rp2350', 4 * 1024 * 1024, 'assets-rp2350.json')):
+        manifest = {'version': 1, 'flashCapacity': capacity, 'chip': chip, 'assets': [{
+            'path': args.output.name, 'offset': PACK_OFFSET, 'length': len(pack),
+            'sha256': hashlib.sha256(pack).hexdigest(), 'paddedLength': len(padded),
+            'paddedSha256': hashlib.sha256(padded).hexdigest()}]}
+        (args.output.parent / name).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    print(f'Wrote {args.output} ({len(pack)} bytes, version {version}, pack CRC-32 {zlib.crc32(pack):08X}); '
+          f'manifests {args.output.parent / "assets-rp2040.json"}, assets-rp2350.json')
+    return pack
+
+
+def pack_plain(args):
+    files = {name: data for name, data in candidates(args.source)}
+    roles, problems = [], []
+    for name, size in PLAIN:
+        data = files.get(name)
+        if data is None:
+            problems.append(f'{name} is missing')
+        elif len(data) != size:
+            problems.append(f'{name} is {len(data)} bytes, not {size}')
+        else:
+            roles.append((name, data))
+    if problems:
+        print('Not packed: ' + '; '.join(problems), file=sys.stderr)
+        raise SystemExit(1)
+    write_pack(args, VERSION_PLAIN, roles)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('source', type=Path, help='folder or zip holding the Ms. Pac-Man ROM set')
     parser.add_argument('-o', '--output', type=Path, required=True, help='pack file to write (keep it out of git)')
+    parser.add_argument('--plain', action='store_true', help='plain Pac-Man hardware set, files by name (see above)')
     args = parser.parse_args()
+    if args.plain:
+        return pack_plain(args)
 
     by_crc = {}
     for name, data in candidates(args.source):
@@ -141,20 +197,8 @@ def main():
             print('  ' + line, file=sys.stderr)
         raise SystemExit(1)
 
-    table = bytearray()
-    body = bytearray()
-    first = HEADER + ENTRY * len(SET)
-    for role, size, crc in SET:
-        table += struct.pack('<16sIIII', role.encode(), first + len(body), size, crc, 0)
-        body += files[role]
-    payload = bytes(table + body)
-    pack = MAGIC + struct.pack('<HHII', VERSION, len(SET), HEADER + len(payload), zlib.crc32(payload)) + payload
-    if len(pack) > PACK_LIMIT:
-        raise SystemExit(f'Pack is {len(pack)} bytes; the store holds {PACK_LIMIT}')
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_bytes(pack)
+    pack = write_pack(args, VERSION, [(role, files[role]) for role, size, crc in SET])
     space = decoded_space(files)
-    print(f'Wrote {args.output} ({len(pack)} bytes, pack CRC-32 {zlib.crc32(pack):08X})')
     print(f'decoded 0000-3FFF CRC-32 {zlib.crc32(bytes(space[0x0000:0x4000])):08X}  '
           f'8000-BFFF CRC-32 {zlib.crc32(bytes(space[0x8000:0xC000])):08X}')
     # The same pack as a sparse asset of an upload (--flash-assets): the route for a compiler that
@@ -167,7 +211,6 @@ def main():
             'sha256': hashlib.sha256(pack).hexdigest(), 'paddedLength': len(padded),
             'paddedSha256': hashlib.sha256(padded).hexdigest()}]}
         (args.output.parent / name).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-    print(f'Manifests for --flash-assets: {args.output.parent / "assets-rp2040.json"}, assets-rp2350.json')
     print(f'Write it: PureMetalForge.exe --storage-write "{args.output}" --offset ${PACK_OFFSET:X} --port COMx -t rp2040')
     print(f'      or: py -3 tools/build.py --compiler <exe> --assets {args.output.parent / "assets-rp2040.json"} '
           f'--output <private folder>/mspacman-with-roms.uf2 --port COMx')

@@ -3,9 +3,12 @@
 ; offset $40000 by the compiler's own uploader (--storage-write ... --offset $40000). The pack holds
 ; the original files unchanged; this file checks them and builds the decoded address space.
 ;
-; Pack: 'MSPK', u16 version 1, u16 count, u32 total bytes, u32 CRC-32 of bytes 16..total-1,
+; Pack: 'MSPK', u16 version (1 = the Ms. Pac-Man set, 2 = a plain Pac-Man hardware set), u16 count, u32 total bytes, u32 CRC-32 of bytes 16..total-1,
 ; then count 32-byte entries (name[16], u32 offset from the pack's start, u32 size, u32 CRC-32,
-; u32 0), then the files. Each file is found by its CRC-32 and size - MAME's "mspacman" set.
+; u32 0), then the files. Version 1: each file is found by its CRC-32 and size - MAME's
+; "mspacman" set. Version 2 (tools/pack_roms.py --plain): a program built for the compiler's
+; Pac-Man board - nine files in a fixed order (6e 6f 6h 6j 5e 5f 7f 4a 1m), each checked
+; against its own CRC-32; no u5/u6/u7, no decryption, no patches, no decode latch.
 ; Anything missing or damaged is refused by name; the game does not start on a wrong set.
 
 #ROMPACK_FLASH = $40000
@@ -30,6 +33,7 @@
 Global Dim RomAddr.i(#ROM_COUNT)    ; where each file is (XIP flash address), 0 = not found
 Global Dim RomCrcTable.l(256)
 Global RomCrcReady.i, RomError.i, RomErrorValue.i
+Global RomPlain.i                    ; 1: a plain Pac-Man hardware set (pack version 2), no auxiliary board
 
 Procedure RomCrcInit()
   Protected i.i, c.l, k.i
@@ -94,7 +98,9 @@ Procedure RomPrintError()
   ElseIf RomError=4
     Print("ROMS: the pack lacks these files of the Ms. Pac-Man set (or they are damaged):")
     For role=0 To #ROM_COUNT-1
-      If RomAddr(role)=0 : Print(" ") : RomPrintName(role) : EndIf
+      If RomAddr(role)=0 And (RomPlain=0 Or (role<>#ROM_U5 And role<>#ROM_U6 And role<>#ROM_U7))
+        Print(" ") : RomPrintName(role)
+      EndIf
     Next
     PrintN("")
   EndIf
@@ -111,7 +117,8 @@ Procedure.i RomStoreOpen()
     RomError=1 : RomErrorValue=PeekL(base) : ProcedureReturn 0
   EndIf
   count=PeekU(base+6) : total=PeekL(base+8)
-  If PeekU(base+4)<>1 Or count<1 Or count>64 Or total<16+count*32 Or total>#ROMPACK_SIZE
+  RomPlain=Bool(PeekU(base+4)=2)
+  If (PeekU(base+4)<>1 And RomPlain=0) Or count<1 Or count>64 Or total<16+count*32 Or total>#ROMPACK_SIZE
     RomError=2 : RomErrorValue=PeekU(base+4) : ProcedureReturn 0
   EndIf
   If RomCrc(base+16,total-16)<>PeekL(base+12)
@@ -119,7 +126,12 @@ Procedure.i RomStoreOpen()
   EndIf
   For e=0 To count-1
     offset=PeekL(base+16+e*32+16) : size=PeekL(base+16+e*32+20) : crc=PeekL(base+16+e*32+24)
-    If offset>=16 And size>0 And offset+size<=total
+    If RomPlain
+      If e<9 And offset>=16 And offset+size<=total
+        role=PeekA(?RomPlainOrder+e)
+        If size=RomWantSize(role) And RomCrc(base+offset,size)=crc : RomAddr(role)=base+offset : EndIf
+      EndIf
+    ElseIf offset>=16 And size>0 And offset+size<=total
       For role=0 To #ROM_COUNT-1
         If RomAddr(role)=0 And size=RomWantSize(role) And crc=RomWantCrc(role)
           If RomCrc(base+offset,size)=crc : RomAddr(role)=base+offset : EndIf
@@ -129,7 +141,9 @@ Procedure.i RomStoreOpen()
   Next
   ok=1
   For role=0 To #ROM_COUNT-1
-    If RomAddr(role)=0 : ok=0 : RomError=4 : EndIf
+    If RomAddr(role)=0 And (RomPlain=0 Or (role<>#ROM_U5 And role<>#ROM_U6 And role<>#ROM_U7))
+      ok=0 : RomError=4
+    EndIf
   Next
   ProcedureReturn ok
 EndProcedure
@@ -155,7 +169,17 @@ EndProcedure
 ; The auxiliary board's decoded bank (MAME init_mspacman + mspacman_install_patches) into the
 ; 64 KB address space at mem: $0000-$3FFF and $8000-$BFFF. RAM and I/O are not touched.
 Procedure RomBuildSpace(mem.i)
-  Protected i.i, p.i, dst.i, src.i
+  Protected i.i, p.i, dst.i, src.i, b.i
+  If RomPlain
+    ; plain Pac-Man hardware: the four ROMs at $0000-$3FFF, the same at $8000-$BFFF (A15 not decoded)
+    For i=0 To $FFF
+      b=PeekA(RomAddr(#ROM_6E)+i) : PokeA(mem+i,b) : PokeA(mem+$8000+i,b)
+      b=PeekA(RomAddr(#ROM_6F)+i) : PokeA(mem+$1000+i,b) : PokeA(mem+$9000+i,b)
+      b=PeekA(RomAddr(#ROM_6H)+i) : PokeA(mem+$2000+i,b) : PokeA(mem+$A000+i,b)
+      b=PeekA(RomAddr(#ROM_6J)+i) : PokeA(mem+$3000+i,b) : PokeA(mem+$B000+i,b)
+    Next
+    ProcedureReturn
+  EndIf
   For i=0 To $FFF
     PokeA(mem+i,PeekA(RomAddr(#ROM_6E)+i))
     PokeA(mem+$1000+i,PeekA(RomAddr(#ROM_6F)+i))
@@ -180,6 +204,8 @@ Procedure RomBuildSpace(mem.i)
 EndProcedure
 
 DataSection
+RomPlainOrder:                       ; pack version 2: the role of each entry, in order
+  Data.a #ROM_6E, #ROM_6F, #ROM_6H, #ROM_6J, #ROM_5E, #ROM_5F, #ROM_7F, #ROM_4A, #ROM_1M
 RomSetTable:                         ; size, CRC-32 for #ROM_6E .. #ROM_1M
   Data.l $1000, $C1E6AB10, $1000, $1A6FB2D4, $1000, $BCDD1BEB, $1000, $817D94E3
   Data.l $0800, $F45FBBCD, $1000, $A90E7000, $1000, $C82CD714

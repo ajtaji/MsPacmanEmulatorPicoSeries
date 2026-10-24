@@ -1,0 +1,195 @@
+; PureMetal on Pac-Man arcade hardware (the compiler's Pac-Man board, Boards/Pacman_Arcade.board):
+; a title in the tile layer inside a border, seven sprites bouncing, a ball the joystick moves,
+; coins and starts counted on the screen, and a tune on the Namco sound chip.
+;
+; BUILD (a compiler with the Pac-Man board):
+;   PureMetalForge.exe --compile demo.pacman -o demo.hex        -> demo_roms\pacman.6e .. 6j
+;   py -3 demo\make_assets.py                                  -> tiles.png, sprites.png, assets.json
+;   py -3 <compiler>\tools\pacman_assets.py demo\assets.json --out demo\demo_roms
+; RUN: the Ms. Pac-Man emulator's desktop program on demo\demo_roms, or on a Pico:
+;   py -3 tools\pack_roms.py --plain demo\demo_roms -o demo\demo_roms\demo.pack  (then build.py --assets)
+;
+; THE HARDWARE, as this program uses it:
+;   $4000 + cell  tile code     $4400 + cell  colour set     (cell: see Cell)
+;   $4FF0 + 2n    sprite n: code << 2 (bit 0 x flip, bit 1 y flip)   $4FF1 + 2n  its colour set
+;   $5060 + 2n    sprite n's position: x register, y register (see the main loop)
+;   $5000 write 1 the vertical-blank interrupt on    $5001 write 1 the sound on
+;   $5045 voice 0 waveform   $5050-$5054 voice 0 frequency, a nibble each   $5055 voice 0 volume
+;   $50C0 any write: the watchdog (16 frames without it reset the machine)
+;   $5000 read IN0 (active low): 1 up, 2 left, 4 right, 8 down, $20 coin
+;   $5040 read IN1 (active low): $20 1 player start, $40 2 player start
+; The picture is the player's, portrait 28 x 36 cells; rows 0-1 and 34-35 are the score rows.
+; Variables are few on purpose: the board has 752 bytes for them, the compiler's working values
+; included.
+
+Global frame.a, seen.a
+Global note.a, noteTime.a, coins.a, starts.a, lastIn0.a, lastIn1.a
+Global Dim px.a(8)      ; sprites' picture x (left edge, 16..200)
+Global Dim py.a(8)      ; picture y (top edge, 40..236)
+Global Dim dirs.a(8)    ; bit 0: moving left, bit 1: moving up
+
+ProcedureInterrupt INT()
+  PokeA($50C0, 0)                      ; the watchdog, every frame
+  frame = frame + 1
+EndProcedure
+
+; The picture's cell x (0-27), y (2-33): video RAM offset (29 - x) * 32 + y - 2 - the columns
+; run right to left, 32 cells a column.
+Procedure Put(x.a, y.a, tile.a, set.a)
+  Protected o.u
+  o = 29 - x
+  o = o * 32 + y - 2
+  PokeA($4000 + o, tile)
+  PokeA($4400 + o, set)
+EndProcedure
+
+; A zero-ended run of tile codes from a DataSection label, left to right from cell x, y.
+Procedure Text(x.a, y.a, set.a, src.u)
+  Protected c.a
+  c = PeekA(src)
+  While c <> 0
+    Put(x, y, c, set)
+    x = x + 1
+    src = src + 1
+    c = PeekA(src)
+  Wend
+EndProcedure
+
+; Two digits of v at x, y.
+Procedure Number(x.a, y.a, v.a)
+  Put(x, y, 48 + v / 10, 2)
+  Put(x + 1, y, 48 + v % 10, 2)
+EndProcedure
+
+; Voice 0 plays frequency value f (Hz x 2^20 / 96000) at volume v.
+Procedure Tone(f.u, v.a)
+  PokeA($5050, f & 15)
+  PokeA($5051, (f >> 4) & 15)
+  PokeA($5052, (f >> 8) & 15)
+  PokeA($5053, (f >> 12) & 15)
+  PokeA($5054, 0)
+  PokeA($5055, v)
+EndProcedure
+
+; The player's ball (sprite 0) from the stick; sprites 1-7 bounce off the border.
+Procedure MoveSprites(in0.a)
+  Protected n.a, d.a
+  If (in0 & 1) = 0 And py(0) > 40 : py(0) = py(0) - 2 : EndIf
+  If (in0 & 8) = 0 And py(0) < 236 : py(0) = py(0) + 2 : EndIf
+  If (in0 & 2) = 0 And px(0) > 16 : px(0) = px(0) - 2 : EndIf
+  If (in0 & 4) = 0 And px(0) < 200 : px(0) = px(0) + 2 : EndIf
+  For n = 1 To 7
+    d = dirs(n)
+    If d & 1
+      px(n) = px(n) - 1
+      If px(n) <= 16 : d = d & 2 : EndIf
+    Else
+      px(n) = px(n) + 1
+      If px(n) >= 200 : d = d | 1 : EndIf
+    EndIf
+    If d & 2
+      py(n) = py(n) - 1
+      If py(n) <= 40 : d = d & 1 : EndIf
+    Else
+      py(n) = py(n) + 1
+      If py(n) >= 236 : d = d | 2 : EndIf
+    EndIf
+    dirs(n) = d
+  Next
+EndProcedure
+
+; The sprites' registers: the hardware counts from the other edges of the turned screen, and
+; sprites 0-2 sit one line over (MAME's xoffsethack).
+Procedure ShowSprites()
+  Protected n.a, r.u
+  For n = 0 To 7
+    r = 239 - px(n)
+    If n < 3 : r = r - 1 : EndIf
+    PokeA($5060 + n * 2, r)
+    r = 272 - py(n)
+    PokeA($5061 + n * 2, r)
+  Next
+EndProcedure
+
+; The tune: a note every 15 frames, sounding for the first 10.
+Procedure Music()
+  noteTime = noteTime + 1
+  If noteTime = 1
+    Tone(PeekU(?Tune + (note & 7) * 2), 10)
+  ElseIf noteTime = 10
+    Tone(0, 0)
+  ElseIf noteTime = 15
+    noteTime = 0 : note = note + 1
+  EndIf
+EndProcedure
+
+; The screen once: blank, the border, the words, the counters.
+Procedure DrawScreen()
+  Protected i.u, x.a, y.a
+  For i = 0 To 1023
+    PokeA($4000 + i, 32)
+    PokeA($4400 + i, 0)
+  Next
+  For x = 0 To 27
+    Put(x, 2, 128 + (x & 3), 4)
+    Put(x, 33, 128 + (x & 3), 4)
+  Next
+  For y = 3 To 32
+    Put(0, y, 129, 4)
+    Put(27, y, 129, 4)
+  Next
+  Text(9, 6, 2, ?TitleText)
+  Text(4, 8, 3, ?BoardText)
+  Text(3, 28, 1, ?HelpText)
+  Text(3, 30, 1, ?CoinText)
+  Number(10, 30, 0)
+  Number(22, 30, 0)
+EndProcedure
+
+Procedure Main()
+  Protected n.a, in0.a, in1.a
+  PokeA($5000, 1)                      ; the interrupt first: it kicks the watchdog every frame
+  EnableInterrupts
+  DrawScreen()
+  For n = 0 To 7                       ; the sprites: code n & 3, colour set 5 + (n & 3)
+    PokeA($4FF0 + n * 2, (n & 3) << 2)
+    PokeA($4FF1 + n * 2, 5 + (n & 3))
+    px(n) = 24 + n * 22
+    py(n) = 60 + n * 20
+    dirs(n) = n & 3
+  Next
+  PokeA($5045, 0)                      ; voice 0: waveform 0, sound on
+  PokeA($5001, 1)
+  lastIn0 = PeekA($5000) : lastIn1 = PeekA($5040)
+  Repeat
+    While frame = seen : Wend          ; once a frame
+    seen = frame
+    in0 = PeekA($5000) : in1 = PeekA($5040)
+    MoveSprites(in0)
+    ShowSprites()
+    ; a coin or a start counted when its input goes down
+    If (in0 & $20) = 0 And (lastIn0 & $20) <> 0
+      coins = coins + 1 : Number(10, 30, coins)
+    EndIf
+    If (in1 & $20) = 0 And (lastIn1 & $20) <> 0
+      starts = starts + 1 : Number(22, 30, starts)
+    EndIf
+    lastIn0 = in0 : lastIn1 = in1
+    Music()
+  ForEver
+EndProcedure
+
+Main()
+
+DataSection
+TitleText:                             ; PUREMETAL
+  Data.a 80, 85, 82, 69, 77, 69, 84, 65, 76, 0
+BoardText:                             ; ON PAC-MAN HARDWARE
+  Data.a 79, 78, 32, 80, 65, 67, 45, 77, 65, 78, 32, 72, 65, 82, 68, 87, 65, 82, 69, 0
+HelpText:                              ; STICK MOVES THE BALL
+  Data.a 83, 84, 73, 67, 75, 32, 77, 79, 86, 69, 83, 32, 84, 72, 69, 32, 66, 65, 76, 76, 0
+CoinText:                              ; COINS:     STARTS:
+  Data.a 67, 79, 73, 78, 83, 58, 32, 32, 32, 32, 32, 32, 83, 84, 65, 82, 84, 83, 58, 0
+Tune:                                  ; C5 E5 G5 C6 G5 E5 C5 G4 (Hz x 2^20 / 96000)
+  Data.u 5714, 7198, 8564, 11429, 8564, 7198, 5714, 4282
+EndDataSection

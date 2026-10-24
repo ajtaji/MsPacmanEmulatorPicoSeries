@@ -25,6 +25,10 @@ from pack_roms import SET, candidates  # noqa: E402
 
 
 def load_set(source):
+    files = dict(candidates(source))
+    if 'u5' not in files and 'pacman.6e' in files:
+        # a plain Pac-Man hardware set (tools/pack_roms.py --plain): the files by name
+        return files
     by_crc = {zlib.crc32(d): d for _, d in candidates(source)}
     out = {}
     for role, size, crc in SET:
@@ -122,6 +126,9 @@ def write_png(path, pixels):
     path.write_bytes(png)
 
 
+MARKER = bytes([13, 10]) + b'FRAME_END' + bytes([13, 10])   # CR LF FRAME_END CR LF
+
+
 def parse(stream):
     """SNAP line, FRAME_BEGIN, 224 x 288 RGB565 little-endian, FRAME_END - from a port or a file."""
     snap = None
@@ -133,21 +140,28 @@ def parse(stream):
         if line.startswith('SNAP '):
             snap = bytes.fromhex(line[5:])
         elif line.startswith('FRAME_BEGIN'):
-            # read until the whole picture is in: one read() returns early when the serial
-            # timeout runs out, and a slow dump would then be taken for a short one
+            # everything up to FRAME_END, then check its length: a short or long picture is
+            # reported with the count, never drawn shifted
             want = 224 * 288 * 2
-            data = b''
+            buf = b''
             deadline = time.monotonic() + 60
-            while len(data) < want and time.monotonic() < deadline:
-                data += stream.read(want - len(data))
-            if len(data) != want:
-                raise SystemExit(f'frame cut short: {len(data)} bytes in 60 s')
-            tail = b''.join(stream.readline() for _ in range(4))
+            end = -1
+            while end < 0 and time.monotonic() < deadline:
+                chunk = stream.read(4096)
+                if not chunk and not hasattr(stream, 'in_waiting'):
+                    break                                   # a file has ended
+                buf += chunk
+                # the marker after the picture; the picture itself may hold any bytes, so only
+                # a marker on a line of its own after it counts
+                end = buf.find(MARKER, max(0, want - 200))
+            tail = buf[end:] + stream.readline() + stream.readline()
             dropped = re.search(rb'usb_dropped=(\d+)', tail)
             if dropped:
                 print(f'board: usb_dropped={int(dropped.group(1))}')
-            if b'FRAME_END' not in tail:
-                raise SystemExit('no FRAME_END after the picture (read after it: %r)' % tail[:200])
+            if end < 0 or end != want:
+                Path('grab-stream.bin').write_bytes(buf)
+                raise SystemExit(f'the picture was {end} bytes, not {want} (stream kept in grab-stream.bin)')
+            data = buf[:want]
             px = struct.unpack('<%dH' % (224 * 288), data)
             return snap, [list(px[y * 224:(y + 1) * 224]) for y in range(288)]
 

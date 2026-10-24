@@ -40,7 +40,7 @@ Procedure MachineMapPages()
   For p=0 To 255
     Z80PageRd(p)=0 : Z80PageWr(p)=0
     If p<$40 Or (p>=$80 And p<$C0) : Z80PageWr(p)=1 : EndIf
-    If p=$00 Or p=$03 Or p=$16 Or p=$21 Or p=$3F Or p=$80 Or p=$97 : Z80PageRd(p)=1 : EndIf
+    If RomPlain=0 And (p=$00 Or p=$03 Or p=$16 Or p=$21 Or p=$3F Or p=$80 Or p=$97) : Z80PageRd(p)=1 : EndIf
     If p>=$48 And p<$4C : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
     If (p>=$50 And p<$80) Or p>=$C0 : Z80PageRd(p)=1 : Z80PageWr(p)=1 : EndIf
   Next
@@ -71,6 +71,7 @@ EndProcedure
 
 ; An access in a trap range switches the bank (-1: not a trap address).
 ProcedureRAM.i MachineTrap(addr.i)
+  If RomPlain : ProcedureReturn -1 : EndIf     ; plain Pac-Man hardware has no decode latch
   If addr>=$3FF8 And addr<=$3FFF : ProcedureReturn 1 : EndIf
   If (addr>=$0038 And addr<=$003F) Or (addr>=$03B0 And addr<=$03B7) Or (addr>=$1600 And addr<=$1607)
     ProcedureReturn 0
