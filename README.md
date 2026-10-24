@@ -63,8 +63,34 @@ py -3 tools/pack_roms.py <folder-or-zip> -o <outside the repo>\mspacman.pack
 PureMetalForge.exe --storage-write <...>\mspacman.pack --offset $40000 --port COM7 -t rp2040
 ```
 
+A compiler without `--storage-write` sends the pack with the firmware instead, as a sparse asset
+(`--flash-assets`, the manifest `pack_roms.py` writes beside the pack). That UF2 then holds the
+ROMs, so `build.py` writes it only outside the repository:
+
+```
+py -3 tools/build.py --compiler <exe> --assets <outside>\assets-rp2040.json --output <outside>\mspacman-with-roms.uf2 --port COM7
+```
+
 The firmware prints the CRC-32 of the address space it decoded; `pack_roms.py` prints the
 same numbers from its own decryption, and the two must match.
+
+## The desktop program (`desktop/`)
+
+The same machine as a Windows program in PureBasic, drawn with the Neon Arcade Display Engine:
+the game's screen scaled in the window, its sound on the PC's speakers (waveOut, paced by the
+sound card's clock: 48,000 samples = 60.606 frames a second), the keyboard, and debug panes -
+registers and flags, the disassembly at PC, a memory view, run / step / frame / breakpoint.
+
+```
+& "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE /CONSTANT MSP_Z80_CORE$=<desktop Z80 core>
+build\MsPacman.exe <ROM folder>
+```
+
+Keys: arrows, 5 or C coin, 1 / 2 start, F5 run/pause, F10 step, F11 frame, F3 reset, M mute.
+`--log N` runs N frames without a window and prints a line a second (build with `/CONSOLE`);
+`--dump <file>` writes the last frame in the board's format for `tools/grab.py --file`.
+Without `MSP_Z80_CORE$` the build carries a stand-in CPU that runs nothing, and says so in its
+title bar and log.
 
 ## Checking the picture
 

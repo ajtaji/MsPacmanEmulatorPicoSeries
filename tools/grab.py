@@ -135,34 +135,19 @@ def parse(stream):
             data = stream.read(224 * 288 * 2)
             if len(data) != 224 * 288 * 2:
                 raise SystemExit(f'frame cut short: {len(data)} bytes')
-            tail = stream.readline() + stream.readline()
+            tail = b''.join(stream.readline() for _ in range(4))
             if b'FRAME_END' not in tail:
-                raise SystemExit('no FRAME_END after the picture')
+                raise SystemExit('no FRAME_END after the picture (read after it: %r)' % tail[:200])
             px = struct.unpack('<%dH' % (224 * 288), data)
             return snap, [list(px[y * 224:(y + 1) * 224]) for y in range(288)]
 
 
 def grab(port):
     import serial
-    link = serial.Serial(port, 115200, timeout=2)
+    link = serial.Serial(port, 115200, timeout=5)
     link.reset_input_buffer()
     link.write(b'p')
-    snap = None
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        line = link.readline().decode(errors='replace').strip()
-        if line.startswith('SNAP '):
-            snap = bytes.fromhex(line[5:])
-        elif line.startswith('FRAME_BEGIN'):
-            data = link.read(224 * 288 * 2)
-            if len(data) != 224 * 288 * 2:
-                raise SystemExit(f'frame cut short: {len(data)} bytes')
-            tail = link.readline() + link.readline()
-            if b'FRAME_END' not in tail:
-                raise SystemExit('no FRAME_END after the picture')
-            px = struct.unpack('<%dH' % (224 * 288), data)
-            return snap, [list(px[y * 224:(y + 1) * 224]) for y in range(288)]
-    raise SystemExit('no frame from the board in 20 s')
+    return parse(link)
 
 
 def main():
