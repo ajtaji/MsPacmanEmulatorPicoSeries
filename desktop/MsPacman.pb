@@ -576,6 +576,17 @@ Procedure WindowRun(folder.s)
 EndProcedure
 
 ; ---------------------------------------------------------------------------
+; A crash is written down, not lost: build with /LINENUMBERING to get the source line too.
+Procedure CrashReport()
+  Protected f.i = CreateFile(#PB_Any, GetTemporaryDirectory() + "MsPacman-crash.txt")
+  If f
+    WriteStringN(f, "error: " + ErrorMessage() + " (code " + Str(ErrorCode()) + ") at address $" + Hex(ErrorAddress()))
+    WriteStringN(f, "line " + Str(ErrorLine()) + " of " + ErrorFile())
+    CloseFile(f)
+  EndIf
+EndProcedure
+OnErrorCall(@CrashReport())
+
 Define folder.s, i.i, logFrames.i, dump.s
 For i = 0 To CountProgramParameters() - 1
   Select LCase(ProgramParameter(i))
