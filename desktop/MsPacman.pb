@@ -12,6 +12,7 @@
 ;   MsPacman.exe <ROM folder> --test-picture --dump <file> [--log N]
 ;   MsPacman.exe <ROM folder> --press 600:coin,660:start,900:left ...   inputs held for 6 frames
 ;                                           at those frames (coin start start2 up down left right)
+;   MsPacman.exe <ROM folder> --log N --wav <file>   the sound chip's output saved as a WAV
 ;   MsPacman.exe <ROM folder> --mute ...    starts with the sound muted (M toggles it)
 ;   MsPacman.exe <ROM folder> --shot <png> <frames>
 ;                                           the window for that many frames, then its picture
@@ -116,12 +117,30 @@ Procedure EmuTestPictureFill()
   MspSprPos(12) = 20 : MspSprPos(13) = 250
 EndProcedure
 
+; --wav: the sound chip's output (what the speakers get, 48 kHz mono 16-bit) to a file.
+Global WavFile.i, WavSamples.q
+Procedure WavOpen(path.s)
+  WavFile = CreateFile(#PB_Any, path)
+  If WavFile = 0 : ProcedureReturn : EndIf
+  WriteString(WavFile, "RIFF", #PB_Ascii) : WriteLong(WavFile, 0) : WriteString(WavFile, "WAVEfmt ", #PB_Ascii)
+  WriteLong(WavFile, 16) : WriteWord(WavFile, 1) : WriteWord(WavFile, 1) : WriteLong(WavFile, 48000)
+  WriteLong(WavFile, 96000) : WriteWord(WavFile, 2) : WriteWord(WavFile, 16)
+  WriteString(WavFile, "data", #PB_Ascii) : WriteLong(WavFile, 0)
+EndProcedure
+Procedure WavClose()
+  If WavFile = 0 : ProcedureReturn : EndIf
+  FileSeek(WavFile, 4) : WriteLong(WavFile, 36 + WavSamples * 2)
+  FileSeek(WavFile, 40) : WriteLong(WavFile, WavSamples * 2)
+  CloseFile(WavFile) : WavFile = 0
+EndProcedure
+
 ; Vertical blank: the picture, the frame's sound, the controls, the watchdog, the interrupt.
 Procedure EmuVblank()
   If EmuTestPicture : EmuTestPictureFill() : EndIf
   VideoRender()
   WsgRender()
   SoundQueue()
+  If WavFile : WriteData(WavFile, @SndFrame(0), #MSP_FRAME_SAMPLES * 2) : WavSamples + #MSP_FRAME_SAMPLES : EndIf
   EmuInputs()
   MspWatchdog + 1
   If EmuTestPicture : MspWatchdog = 0 : EndIf
@@ -229,6 +248,7 @@ Procedure LogRun(frames.i, dump.s)
   Next
   now = ElapsedMilliseconds()
   PrintN("done: " + Str(frames) + " frames in " + Str(now - t0) + " ms (" + StrF(frames * 1000.0 / ((now - t0) + 1), 1) + " frames/s unpaced)")
+  If WavFile : PrintN("sound written: " + Str(WavSamples) + " samples") : WavClose() : EndIf
   If dump <> ""
     If EmuDumpFrame(dump) : PrintN("frame written: " + dump) : Else : PrintN("could not write " + dump) : EndIf
   EndIf
@@ -564,6 +584,7 @@ For i = 0 To CountProgramParameters() - 1
     Case "--test-picture" : EmuTestPicture = 1
     Case "--press" : i + 1 : EmuPress = ProgramParameter(i)
     Case "--mute" : SndMuted = 1
+    Case "--wav" : i + 1 : WavOpen(ProgramParameter(i))
     Case "--log-every" : i + 1 : LogEvery = Val(ProgramParameter(i)) : If LogEvery < 1 : LogEvery = 1 : EndIf
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))
     Default : folder = ProgramParameter(i)
