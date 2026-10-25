@@ -56,6 +56,8 @@ Per second of each core (ms):
 | Pico 2 W, 150 MHz, BASIC | 60.6, 0 dropped | 116-119 / 30-53 / 820-841 | 257-269 / 653-666 / 25 | MATCH |
 | Pico 2 W, 150 MHz, Thumb-2 | 60.6, 0 dropped | 106 / 14-20 / 860-867 | **91** / 827 / 26 | MATCH |
 
+The Thumb-2 row also has the Z80 core's Thumb-2 dispatch (Z80EmulatorPicoSeries 92c3267, the same
+`src/z80.pico2` the build includes): the Z80 itself went from 116-119 to 106 ms/s.
 Thumb-2 draws a frame about 2.9 times faster and makes the sound chip about 2.5 times faster
 (3.6 times in the board check). Core 1's idle time does not grow: the panel link (SPI at
 75 MHz on the Pico 2 W) is what core 1 waits on, and the time saved moves into that wait.
