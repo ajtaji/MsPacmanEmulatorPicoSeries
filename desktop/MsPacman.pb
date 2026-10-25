@@ -3,7 +3,7 @@
 ;
 ; BUILD (x64, from PowerShell, C back end):
 ;   & "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE
-;       [/CONSTANT GL_ENGINE_DIR$=C:/path/to/engine/]   (default: the shared engine path below)
+;       [/CONSTANT GL_ENGINE_DIR$=C:/path/to/engine/]   (default: Neon-Arcade-Dispay-Engine cloned beside this repo)
 ;       [/CONSTANT MSP_Z80_DIR$=C:/path/to/Z80EmulatorPicoSeries/desktop/]   (default: beside this repo)
 ; RUN:
 ;   MsPacman.exe [ROM folder]               the window (asks for the folder when none is given)
@@ -29,7 +29,7 @@
 EnableExplicit
 
 CompilerIf Not Defined(GL_ENGINE_DIR$, #PB_Constant)
-  #GL_ENGINE_DIR$ = "C:/Embedded Compiler/Neon-Arcade-Dispay-Engine/"
+  #GL_ENGINE_DIR$ = #PB_Compiler_FilePath + "../../Neon-Arcade-Dispay-Engine/"   ; github.com/ajtaji/Neon-Arcade-Dispay-Engine
 CompilerEndIf
 XIncludeFile #GL_ENGINE_DIR$ + "GlTypes.pbi"
 XIncludeFile #GL_ENGINE_DIR$ + "GlUtilities.pbi"

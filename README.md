@@ -157,12 +157,21 @@ The same machine as a Windows program in PureBasic, drawn with the Neon Arcade D
 screen scaled in the window, the sound on the PC's speakers, the keyboard, and debug panes - registers
 and flags, the disassembly at PC, memory views, run / step / frame / breakpoint.
 
+It needs PureBasic 6.41 for Windows (x64, the C back end) and two more repositories cloned beside this
+one: the Z80 core and the [Neon Arcade Display Engine](https://github.com/ajtaji/Neon-Arcade-Dispay-Engine)
+(the name is spelled "Dispay"). In PowerShell:
+
 ```
-& "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE /CONSTANT GL_ENGINE_DIR$=<engine folder>/
-build\MsPacman.exe <ROM folder>
+git clone https://github.com/ajtaji/MsPacmanEmulatorPicoSeries.git
+git clone https://github.com/ajtaji/Z80EmulatorPicoSeries.git
+git clone https://github.com/ajtaji/Neon-Arcade-Dispay-Engine.git
+cd MsPacmanEmulatorPicoSeries
+& "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE MsPacman.exe /THREAD /DPIAWARE
+.\MsPacman.exe <ROM folder>
 ```
 
-The Z80 core is taken from `../Z80EmulatorPicoSeries/desktop/` (or `/CONSTANT MSP_Z80_DIR$=<folder>/`).
+The engine and the Z80 core are found beside this repository; elsewhere, say where with
+`/CONSTANT GL_ENGINE_DIR$=<folder>/` and `/CONSTANT MSP_Z80_DIR$=<Z80 repository>/desktop/` (trailing slash).
 Keys: arrows, `5` or `C` coin, `1` / `2` start, F5 run/pause, F10 step, F11 frame, F3 reset, M mute.
 Other modes: `--log N` (no window, a line a second; build with `/CONSOLE`), `--wav <file>` (the sound
 chip's output), `--press 600:coin,660:start` (scripted inputs), `--shot <png> <frames>` (a screenshot),
