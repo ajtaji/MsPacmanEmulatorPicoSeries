@@ -1,0 +1,88 @@
+; DIAGNOSTIC (never ships), Pico 2 W: the WSG voice's Thumb-2 block (rp2350/wsg.pico2,
+; #MSP_THUMB2=1) against the BASIC loop it replaces, copied here as WsgVoiceRef. 300 trials of
+; random waveforms, frequencies, volumes, counters and ring positions (wrapping included) into
+; two rings filled with the same random samples; every sample and the returned counter must agree.
+;   py -3 tools/build.py --source rp2040/Diagnostics/wsg_check.pico2w --output <uf2> --port COM6
+; Prints "WSG_CHECK trials=300 fail=0" and the time of each version.
+#MSP_CLOCK_KHZ=150000
+#MSP_THUMB2=1
+EnableExplicit
+XIncludeFile "RP2350/Lib/bits.pico2"
+XIncludeFile "RP2350/Lib/clocks.pico2"
+XIncludeFile "RP2350/Lib/timer.pico2"
+XIncludeFile "RP2350/Lib/safety.pico2"
+XIncludeFile "RP2350/Lib/usb_serial.pico2"
+XIncludeFile "RP2350/Lib/string_out.pico2"
+XIncludeFile "../../rp2350/wsg.pico2"
+
+Global Dim RefPcm.w(#PCM_RING)
+Global Seed.l = 12345
+
+Procedure.i Rnd32()
+  Seed=Seed*1103515245+12345
+  ProcedureReturn (Seed>>8)&$FFFFFF
+EndProcedure
+
+; rp2040/wsg.pico's BASIC loop, into RefPcm.
+Procedure.l WsgVoiceRef(at.i, n.i, wave.i, freq.i, vol.i, counter.l)
+  Protected i.i, s.i, slot.i
+  For i=0 To n-1
+    s=PeekW(wave+((counter>>14)&62))
+    counter=counter+freq
+    s=s+PeekW(wave+((counter>>14)&62))
+    counter=counter+freq
+    slot=@RefPcm(0)+((at+i)&(#PCM_RING-1))*2
+    PokeW(slot,PeekW(slot)+s*vol*#WSG_GAIN)
+  Next
+  ProcedureReturn counter
+EndProcedure
+
+Procedure Main()
+  Protected t.i, i.i, k.i, at.i, n.i, wave.i, freq.i, vol.i, counter.l, c1.l, c2.l, bad.i, fail.i
+  Protected t1.i, t2.i, mark.i
+  SafetyBoot() : ClockInitKhz(#MSP_CLOCK_KHZ) : TimerInit() : UsbSerialInit()
+  t=Micros()
+  While UsbSerialReady()=0 And Micros()-t<3000000 : UsbSerialTask() : Wend
+  t=Micros()
+  While Micros()-t<1500000 : UsbSerialTask() : Wend
+  For i=0 To 255 : WsgWave(i)=(Rnd32()&15)-8 : Next
+  For k=1 To 300
+    For i=0 To #PCM_RING-1
+      Pcm(i)=Rnd32()&$FFFF : RefPcm(i)=Pcm(i)
+    Next
+    at=Rnd32()&(#PCM_RING-1)
+    t=Rnd32() : n=1+t % 792
+    If k=1 : n=792 : at=#PCM_RING-100 : EndIf
+    wave=@WsgWave(0)+(Rnd32()&7)*64
+    freq=Rnd32()&$FFFFF
+    t=Rnd32() : vol=1+t % 15
+    counter=Rnd32()*256+(Rnd32()&255)
+    mark=Micros()
+    c1=WsgVoice(at,n,wave,freq,vol,counter)
+    t1=t1+Micros()-mark
+    mark=Micros()
+    c2=WsgVoiceRef(at,n,wave,freq,vol,counter)
+    t2=t2+Micros()-mark
+    bad=0
+    For i=0 To #PCM_RING-1
+      If Pcm(i)<>RefPcm(i) : bad=bad+1 : EndIf
+    Next
+    If c1<>c2 : bad=bad+1 : EndIf
+    If bad
+      fail=fail+1
+      If fail<=5
+        Print("WSG_MISMATCH trial=") : PrintDec(k) : Print(" at=") : PrintDec(at) : Print(" n=") : PrintDec(n)
+        Print(" bad=") : PrintDec(bad) : Print(" counter_t2=") : PrintDec(c1) : Print(" counter_ref=") : PrintDec(c2) : PrintN("")
+      EndIf
+    EndIf
+    UsbSerialTask() : SafetyPet()
+  Next
+  Repeat
+    Print("WSG_CHECK trials=300 fail=") : PrintDec(fail)
+    Print(" thumb2_us=") : PrintDec(t1) : Print(" basic_us=") : PrintDec(t2) : PrintN("")
+    t=Micros()
+    While Micros()-t<1000000 : UsbSerialTask() : SafetyPet() : Wend
+  ForEver
+EndProcedure
+
+Main()

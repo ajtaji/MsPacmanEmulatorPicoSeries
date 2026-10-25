@@ -46,7 +46,9 @@ Global Dim VidSprites.l(130)       ; the sprite list (#SPL_BYTES)
 Global VidPublished.i             ; frames published by core 0 (the snapshot is VidPublished & 1)
 Global VidShown.i                 ; frames core 1 has finished sending
 Global VidDropped.i               ; frames core 0 published over one core 1 had not started
-Global VidRenderUs.i, VidSendWaitUs.i, VidFrames.i, VidError.i
+Global Dim VidAsmArgs.l(16)        ; Thumb-2 blocks' arguments, 8 longs per core (both cores draw strips)
+#VID_SIO_CPUID = $D0000000         ; SIO: the number of the core that reads it
+Global VidRenderUs.i, VidSendWaitUs.i, VidDrawUs.i, VidFrames.i, VidError.i
 
 ; Bits of a native gfx byte, MAME bit order (offset 0 is bit 7 of byte 0).
 Procedure.i VidNativeBit(base.i, offset.i)
@@ -160,22 +162,158 @@ EndProcedure
 ; Strip ty (0..35) of the frame into dst (1792 RGB565 pixels).
 ProcedureRAM VideoRenderStrip(ty.i, dst.i, snap.i, spl.i)
   Protected tx.i, a.i, src.i, pt.i, p.i, r.i, bits.i, cell.i
-  Protected n.i, e.i, top.i, y0.i, y1.i, y.i, x.i, x0.i, lx.i, ly.i, row.i, c.i, fy.i, colour.i, base.i
+  Protected n.i, e.i, top.i, y0.i, y1.i, y.i, x.i, x0.i, lx.i, ly.i, row.i, c.i, fy.i, colour.i, base.i, args.i
   cell=ty*28
-  For tx=0 To 27
-    a=TileAddr(cell+tx)
-    src=@TileRow(0)+PeekA(snap+#SNAP_VRAM+a)*16
-    pt=@PairTab(0)+(PeekA(snap+#SNAP_CRAM+a)&31)*64
-    p=dst+tx*16
-    For r=0 To 7
-      bits=PeekU(src)
-      PokeL(p,PeekL(pt+((bits&15)<<2)))
-      PokeL(p+4,PeekL(pt+((bits>>2)&60)))
-      PokeL(p+8,PeekL(pt+((bits>>6)&60)))
-      PokeL(p+12,PeekL(pt+((bits>>10)&60)))
-      src=src+2 : p=p+448
+  CompilerIf #MSP_THUMB2=1
+    args=@VidAsmArgs(0)+PeekL(#VID_SIO_CPUID)*32
+    ; The same 28 tiles in Thumb-2: a tile's eight rows unrolled, each row one halfword of
+    ; TileRow and four pixel-pair loads from its colour set's PairTab.
+    PokeL(args,@TileAddr(0)+cell*2) : PokeL(args+4,snap) : PokeL(args+8,dst)
+    ASM
+        push {r6, r7, lr}
+        ldr r2, =0xD0000000
+        ldr r2, [r2]
+        ldr r1, =global_vidasmargs
+        add r2, r1, r2, lsl #5
+        ldr r0, [r2]
+        ldr r1, [r2, #4]
+        ldr r3, [r2, #8]
+        mov r12, #28
+      vrs_t2_tile:
+        ldrh r2, [r0], #2
+        add r2, r1, r2
+        ldrb r6, [r2]
+        ldrb r7, [r2, #1024]
+        and r7, r7, #31
+        ldr lr, =global_pairtab
+        add lr, lr, r7, lsl #6
+        ldr r2, =global_tilerow
+        add r6, r2, r6, lsl #4
+        ldrh r7, [r6, #0]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #0]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #4]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #8]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #12]
+        ldrh r7, [r6, #2]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #448]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #452]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #456]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #460]
+        ldrh r7, [r6, #4]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #896]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #900]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #904]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #908]
+        ldrh r7, [r6, #6]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1344]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1348]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1352]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1356]
+        ldrh r7, [r6, #8]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1792]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1796]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1800]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #1804]
+        ldrh r7, [r6, #10]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2240]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2244]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2248]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2252]
+        ldrh r7, [r6, #12]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2688]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2692]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2696]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #2700]
+        ldrh r7, [r6, #14]
+        and r2, r7, #15
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #3136]
+        ubfx r2, r7, #4, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #3140]
+        ubfx r2, r7, #8, #4
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #3144]
+        lsr r2, r7, #12
+        ldr r2, [lr, r2, lsl #2]
+        str r2, [r3, #3148]
+        add r3, r3, #16
+        subs r12, r12, #1
+        bne vrs_t2_tile
+        pop {r6, r7, lr}
+    EndASM
+  CompilerElse
+    For tx=0 To 27
+      a=TileAddr(cell+tx)
+      src=@TileRow(0)+PeekA(snap+#SNAP_VRAM+a)*16
+      pt=@PairTab(0)+(PeekA(snap+#SNAP_CRAM+a)&31)*64
+      p=dst+tx*16
+      For r=0 To 7
+        bits=PeekU(src)
+        PokeL(p,PeekL(pt+((bits&15)<<2)))
+        PokeL(p+4,PeekL(pt+((bits>>2)&60)))
+        PokeL(p+8,PeekL(pt+((bits>>6)&60)))
+        PokeL(p+12,PeekL(pt+((bits>>10)&60)))
+        src=src+2 : p=p+448
+      Next
     Next
-  Next
+  CompilerEndIf
   ; Sprites: MAME clips them to native x 16..271, the picture's lines 16..271.
   top=ty*8
   If top<16 Or top>=272 : ProcedureReturn : EndIf
@@ -195,15 +333,57 @@ ProcedureRAM VideoRenderStrip(ty.i, dst.i, snap.i, spl.i)
         If PeekL(base+8) : ly=15-ly : EndIf
         row=PeekL(@SprRow(0)+PeekL(base)+ly*4)
         p=dst+((y-top)*224+x0)*2
-        For lx=0 To 15
-          x=x0+lx
-          If x>=0 And x<224
-            If fy : c=(row>>((15-lx)*2))&3 : Else : c=(row>>(lx*2))&3 : EndIf
-            c=PeekL(colour+c*4)
-            If c>=0 : PokeU(p,c) : EndIf
-          EndIf
-          p=p+2
-        Next
+        CompilerIf #MSP_THUMB2=1
+          ; The row's 16 pixels in Thumb-2; a y flip reverses the row's 2-bit pixels first
+          ; (rbit, then each pair's two bits swapped back).
+          PokeL(args+12,row) : PokeL(args+16,p) : PokeL(args+20,x0) : PokeL(args+24,colour) : PokeL(args+28,fy)
+          ASM
+              push {r6}
+              ldr r2, =0xD0000000
+              ldr r2, [r2]
+              ldr r1, =global_vidasmargs
+              add r12, r1, r2, lsl #5
+              ldr r0, [r12, #12]
+              ldr r1, [r12, #16]
+              ldr r2, [r12, #20]
+              ldr r3, [r12, #24]
+              ldr r12, [r12, #28]
+              cmp r12, #0
+              beq vrs_t2_spr_plain
+              rbit r0, r0
+              and r6, r0, #0x55555555
+              lsr r0, r0, #1
+              and r0, r0, #0x55555555
+              orr r0, r0, r6, lsl #1
+            vrs_t2_spr_plain:
+              mov r12, #16
+            vrs_t2_spr_px:
+              cmp r2, #224
+              bhs vrs_t2_spr_skip
+              and r6, r0, #3
+              ldr r6, [r3, r6, lsl #2]
+              cmp r6, #0
+              it ge
+              strhge r6, [r1]
+            vrs_t2_spr_skip:
+              lsr r0, r0, #2
+              add r1, r1, #2
+              add r2, r2, #1
+              subs r12, r12, #1
+              bne vrs_t2_spr_px
+              pop {r6}
+          EndASM
+        CompilerElse
+          For lx=0 To 15
+            x=x0+lx
+            If x>=0 And x<224
+              If fy : c=(row>>((15-lx)*2))&3 : Else : c=(row>>(lx*2))&3 : EndIf
+              c=PeekL(colour+c*4)
+              If c>=0 : PokeU(p,c) : EndIf
+            EndIf
+            p=p+2
+          Next
+        CompilerEndIf
         y=y+1
       Wend
     EndIf
@@ -241,7 +421,7 @@ EndProcedure
 
 ; One whole frame to the panel, from snapshot snap. Core 1.
 ProcedureRAM VideoShowFrame(snap.i)
-  Protected ty.i, buf.i, start.i
+  Protected ty.i, buf.i, start.i, t.i
   start=Micros()
   VideoPrepare(snap,@VidSprites(0))
   Tft796Window(#VID_X0,#VID_Y0,#VID_X0+#VID_W-1,#VID_Y0+#VID_H-1)
@@ -250,7 +430,9 @@ ProcedureRAM VideoShowFrame(snap.i)
   PokeL(#VID_SPI_DMACR,PeekL(#VID_SPI_DMACR)|#SPI_SSPDMACR_TXDMAE)
   For ty=0 To 35
     buf=@VidStrip(0)+(ty&1)*(#VID_STRIP_PIXELS*2)
+    t=Micros()
     VideoRenderStrip(ty,buf,snap,@VidSprites(0))
+    VidDrawUs=VidDrawUs+Micros()-t
     AudioPoll()
     If ty>0
       If VideoDmaWait()=0 : Break : EndIf

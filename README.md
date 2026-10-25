@@ -37,9 +37,28 @@ Timing: the Z80 at 3.072 MHz, 50,688 T-states a frame, 60.606 frames a second (1
 paced by the microsecond timer. Core 0 runs the Z80, the machine and the sound; core 1 the
 display and the Bluetooth stream.
 
-Not modelled: the auxiliary board's decode latch (the decoded bank is always in, as on the
-decrypted-ROM bootlegs that run the same program), the cocktail cabinet's flip, coin lockout
-and lamps.
+The auxiliary board's decode latch is modelled (the start-up ROM test needs it). Not modelled:
+the cocktail cabinet's flip, coin lockout and lamps.
+
+On the Pico 2 the strip renderer (tiles and each sprite row) and the WSG voice are Thumb-2
+inline assembly (`#MSP_THUMB2=1`, set by `tools/port_rp2350.py`); the Pico W keeps the
+BASIC versions of the same code. `rp2040/Diagnostics/wsg_check.pico2w` checks the Thumb-2 voice
+against the BASIC loop on the board (300 random trials: 0 differ).
+
+## Measured (silent build, a played game, USB coin/start at 14/16 s, 2026-10-25)
+
+Ms. Pac-Man is a Midway US machine: 60.606 frames a second, and the panel shows every one.
+Per second of each core (ms):
+
+| Board | fps shown | Core 0: Z80 / WSG / idle | Core 1: drawing / SPI wait / idle | Frame |
+|---|---|---|---|---|
+| Pico W, 200 MHz (BASIC) | 60.6, 0 dropped | 122 / 45 / 822 | 273 / 420 / 118 | — |
+| Pico 2 W, 150 MHz, BASIC | 60.6, 0 dropped | 116-119 / 30-53 / 820-841 | 257-269 / 653-666 / 25 | MATCH |
+| Pico 2 W, 150 MHz, Thumb-2 | 60.6, 0 dropped | 106 / 14-20 / 860-867 | **91** / 827 / 26 | MATCH |
+
+Thumb-2 draws a frame about 2.9 times faster and makes the sound chip about 2.5 times faster
+(3.6 times in the board check). Core 1's idle time does not grow: the panel link (SPI at
+75 MHz on the Pico 2 W) is what core 1 waits on, and the time saved moves into that wait.
 
 ## Build and run
 

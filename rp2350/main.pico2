@@ -29,6 +29,8 @@ CompilerIf #MSP_AUDIO=1
   XIncludeFile "Shared/Bluetooth/sbc.pmi"
   XIncludeFile "Shared/Bluetooth/bt_audio.pmi"
 CompilerEndIf
+; 1 on the Pico 2 only (tools/port_rp2350.py): the strip renderer and the WSG voices in Thumb-2.
+#MSP_THUMB2=1
 XIncludeFile "wsg.pico2"
 XIncludeFile "input.pico2"
 XIncludeFile "video.pico2"
@@ -141,7 +143,7 @@ Procedure HandleKey(key.i)
 EndProcedure
 
 ; One second's numbers.
-Global RepFrames.i, RepShown.i, RepDropped.i, RepIdle.i, RepZ80.i, RepRender.i, RepWsg.i, RepIdle1.i, RepAudio.i, RepT.i, RepInts.i, RepWait.i
+Global RepFrames.i, RepShown.i, RepDropped.i, RepIdle.i, RepZ80.i, RepRender.i, RepWsg.i, RepIdle1.i, RepAudio.i, RepT.i, RepInts.i, RepWait.i, RepDraw.i
 Procedure Report(us.i)
   Print("MSP fps=") : PrintDec(MspFrames-RepFrames)
   Print(" shown=") : PrintDec(VidShown-RepShown) : Print(" dropped=") : PrintDec(VidDropped-RepDropped)
@@ -149,7 +151,7 @@ Procedure Report(us.i)
   Print(" ints=") : PrintDec(MspInterrupts-RepInts)
   Print(" z80_us=") : PrintDec(MspZ80Us-RepZ80) : Print(" wsg_us=") : PrintDec(WsgRenderUs-RepWsg)
   Print(" core0_idle_us=") : PrintDec(MspIdleUs-RepIdle)
-  Print(" render_us=") : PrintDec(VidRenderUs-RepRender) : Print(" spi_wait_us=") : PrintDec(VidSendWaitUs-RepWait)
+  Print(" render_us=") : PrintDec(VidRenderUs-RepRender) : Print(" draw_us=") : PrintDec(VidDrawUs-RepDraw) : Print(" spi_wait_us=") : PrintDec(VidSendWaitUs-RepWait)
   Print(" core1_idle_us=") : PrintDec(Core1IdleUs-RepIdle1)
   Print(" bt_us=") : PrintDec(AudioBusyUs-RepAudio) : Print(" bt_live=") : PrintDec(AudioLive)
   Print(" packets=") : PrintDec(AudioPackets) : Print(" underruns=") : PrintDec(AudioUnderruns)
@@ -157,7 +159,7 @@ Procedure Report(us.i)
   Print(" vid_err=") : PrintDec(VidError) : Print(" pc=") : PrintDec(Z80PC) : Print(" window_us=") : PrintDec(us) : PrintN("")
   RepFrames=MspFrames : RepShown=VidShown : RepDropped=VidDropped : RepIdle=MspIdleUs : RepZ80=MspZ80Us
   RepRender=VidRenderUs : RepWsg=WsgRenderUs : RepIdle1=Core1IdleUs : RepAudio=AudioBusyUs : RepT=MspTStates
-  RepInts=MspInterrupts : RepWait=VidSendWaitUs
+  RepInts=MspInterrupts : RepWait=VidSendWaitUs : RepDraw=VidDrawUs
 EndProcedure
 
 ; The machine, forever: a frame of T-states in #MSP_SLICES pieces (USB served between them),

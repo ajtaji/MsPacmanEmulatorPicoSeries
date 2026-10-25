@@ -22,6 +22,8 @@ Global WsgEnabled.i
 Global Dim Pcm.w(#PCM_RING)
 Global PcmCount.l                   ; samples ever written (BtAudioSource reads this)
 Global WsgRenderUs.i
+Global Dim WsgScaled.l(32)          ; Thumb-2: one voice's waveform times its volume and the gain
+Global Dim WsgAsmArgs.l(4)          ; Thumb-2: at, n, freq, counter (core 0 only)
 
 Procedure WsgBegin(prom.i)
   Protected i.i
@@ -34,15 +36,54 @@ EndProcedure
 ; One voice's n samples added into the ring from position at.
 ProcedureRAM.l WsgVoice(at.i, n.i, wave.i, freq.i, vol.i, counter.l)
   Protected i.i, s.i, slot.i
-  For i=0 To n-1
-    s=PeekW(wave+((counter>>14)&62))
-    counter=counter+freq
-    s=s+PeekW(wave+((counter>>14)&62))
-    counter=counter+freq
-    slot=@Pcm(0)+((at+i)&(#PCM_RING-1))*2
-    PokeW(slot,PeekW(slot)+s*vol*#WSG_GAIN)
-  Next
-  ProcedureReturn counter
+  CompilerIf #MSP_THUMB2=1
+    ; Thumb-2: the waveform already times the volume (WsgScaled); the ring index is kept masked in
+    ; place, 14 instructions a sample.
+    For i=0 To 31 : WsgScaled(i)=PeekW(wave+i*2)*vol*#WSG_GAIN : Next
+    WsgAsmArgs(0)=at&(#PCM_RING-1) : WsgAsmArgs(1)=n : WsgAsmArgs(2)=freq : WsgAsmArgs(3)=counter
+    ASM
+        push {r6, r7, lr}
+        ldr r12, =global_wsgasmargs
+        ldr r0, [r12]
+        ldr r1, [r12, #4]
+        ldr r3, [r12, #8]
+        ldr r6, [r12, #12]
+        ldr r2, =global_wsgscaled
+        ldr r12, =global_pcm
+        cmp r1, #0
+        ble wsg_t2_done
+      wsg_t2_sample:
+        ubfx r7, r6, #15, #5
+        ldr r7, [r2, r7, lsl #2]
+        add r6, r6, r3
+        ubfx lr, r6, #15, #5
+        ldr lr, [r2, lr, lsl #2]
+        add r6, r6, r3
+        add r7, r7, lr
+        ldrh lr, [r12, r0, lsl #1]
+        add r7, r7, lr
+        strh r7, [r12, r0, lsl #1]
+        add r0, r0, #1
+        bfc r0, #12, #20
+        subs r1, r1, #1
+        bne wsg_t2_sample
+      wsg_t2_done:
+        ldr r12, =global_wsgasmargs
+        str r6, [r12, #12]
+        pop {r6, r7, lr}
+    EndASM
+    ProcedureReturn WsgAsmArgs(3)
+  CompilerElse
+    For i=0 To n-1
+      s=PeekW(wave+((counter>>14)&62))
+      counter=counter+freq
+      s=s+PeekW(wave+((counter>>14)&62))
+      counter=counter+freq
+      slot=@Pcm(0)+((at+i)&(#PCM_RING-1))*2
+      PokeW(slot,PeekW(slot)+s*vol*#WSG_GAIN)
+    Next
+    ProcedureReturn counter
+  CompilerEndIf
 EndProcedure
 
 ; The next n samples (n <= #PCM_RING / 2) from the registers as they stand.

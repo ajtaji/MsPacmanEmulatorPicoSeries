@@ -6,6 +6,7 @@ The RP2040 files are the source; never edit rp2350/ by hand. What differs:
   - the board libraries (RP2350/Lib/*.pico2) and the Z80 core's Pico 2 build (src/z80.pico2);
   - SPI0's addresses and the DMA request field's position;
   - core 1 starts through RP2350/Lib/multicore_smp.pico2 (McLaunchCore1), not multicore_launch();
+  - the strip renderer and the WSG voices in Thumb-2 (#MSP_THUMB2=1); the Pico W keeps Thumb-1;
   - the system clock (150 MHz, the Pico 2 W's nominal, as the NES port runs) and the speaker's
     link key in the 4 MB chip's last sector ($3FF000).
 Every per-file replacement must find its text, or the port stops.
@@ -35,6 +36,7 @@ PER_FILE = {
         ('XIncludeFile "RP2350/Lib/cyw43_nvram.pico"',
          'XIncludeFile "RP2350/Lib/multicore_smp.pico2"\nXIncludeFile "RP2350/Lib/cyw43_nvram.pico2"'),
         ('; Ms. Pac-Man for the Pico W:', '; Ms. Pac-Man for the Pico 2 W:'),
+        ('#MSP_THUMB2=0', '#MSP_THUMB2=1'),
         ('PrintN("Ms. Pac-Man PureMetal - Pico W")', 'PrintN("Ms. Pac-Man PureMetal - Pico 2 W")'),
         ('''; multicore_launch() works in r4-r7, which the Z80 core holds: its own procedure saves them.
 Procedure.i LaunchCore1()

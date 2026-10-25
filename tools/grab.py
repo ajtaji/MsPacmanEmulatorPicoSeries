@@ -126,6 +126,7 @@ def write_png(path, pixels):
     path.write_bytes(png)
 
 
+GRAB_LIMIT = float(__import__('os').environ.get('GRAB_LIMIT', '30'))   # seconds to find the frame
 GRAB_SETTLE = float(__import__('os').environ.get('GRAB_SETTLE', '0'))
 ROMS_FOR_CHECK = None                                       # set by main(): to locate a gap
 MARKER = bytes([13, 10]) + b'FRAME_END' + bytes([13, 10])   # CR LF FRAME_END CR LF
@@ -134,7 +135,12 @@ MARKER = bytes([13, 10]) + b'FRAME_END' + bytes([13, 10])   # CR LF FRAME_END CR
 def parse(stream):
     """SNAP line, FRAME_BEGIN, 224 x 288 RGB565 little-endian, FRAME_END - from a port or a file."""
     snap = None
+    give_up = time.monotonic() + GRAB_LIMIT
     while True:
+        if time.monotonic() > give_up:
+            # a board running something else prints forever and never sends a frame: never hold
+            # the port past the lease
+            raise SystemExit(f'no frame within {GRAB_LIMIT:.0f} s (is this firmware running?)')
         line = stream.readline()
         if not line:
             raise SystemExit('no frame in the stream')
@@ -148,7 +154,7 @@ def parse(stream):
             # reported with the count, never drawn shifted
             want = 224 * 288 * 2
             buf = b''
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + 30
             end = -1
             while end < 0 and time.monotonic() < deadline:
                 chunk = stream.read(4096)
