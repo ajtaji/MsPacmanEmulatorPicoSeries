@@ -1,120 +1,227 @@
 # Ms. Pac-Man for the Raspberry Pi Pico series — PureMetal
 
-An emulator of the Ms. Pac-Man arcade machine (Midway / General Computer, 1981) for the
-Raspberry Pi Pico W (RP2040) and Pico 2 W (RP2350), written in PureMetal and compiled with
-PureMetal Forge to bare-metal code: no SDK, no RTOS.
+An emulator of the Ms. Pac-Man arcade machine (Midway / General Computer, 1981) for the Raspberry Pi
+Pico W (RP2040) and Pico 2 W (RP2350), written in PureMetal and compiled with PureMetal Forge to
+bare-metal machine code: no SDK, no RTOS. It runs the original program at the arcade board's own speed -
+60.6 frames a second, every frame shown on an ST7796 panel - with the Namco sound chip played to a
+Bluetooth speaker. A Windows version of the same machine, with a debugger, is included.
 
-**No ROMs are included.** The game's ROMs are commercial; you load your own set onto the
-board's flash (below). Nothing in this repository is derived from them.
+**No game ROMs are included.** Ms. Pac-Man's ROMs are commercial. The firmware has none in it; you load
+your own set onto the board's flash (see [Loading the ROMs](#loading-the-roms)).
 
-> Status: the machine is written and builds for both boards; it waits for the Z80 core
-> (`Z80EmulatorPicoSeries`) to fit the Pico W's SRAM and has not yet run on a board. Nothing
-> below is claimed as measured until it has.
+![The PureMetal demo program running in the desktop version](docs/images/demo-desktop.png)
 
-## Hardware
+*The screenshot is the PureMetal demo program written for Pac-Man hardware ([demo/](demo/)), running in
+the desktop version with its debug panes - its own graphics, not the game's.*
 
-- Raspberry Pi Pico W (Pico 2 W builds too) on the **LAFVIN ST7796 kit** — the display and
-  controls the NES emulator uses: LCD SCK/MOSI GP2/GP3 (SPI0), CS/DC/RST GP5/GP6/GP7, buttons
-  GP15 (A) and GP14 (B), joystick GP26/GP27.
-- The 224 × 288 picture is shown unscaled, upright, centred on the 320 × 480 panel.
-- Sound: a Bluetooth speaker (A2DP), through PureMetal's `Shared/Bluetooth/bt_audio.pmi`.
+## Features
 
-Controls: stick = joystick, **B** = coin, **A** = 1 player start, **A + B** = 2 player start.
+- The whole Ms. Pac-Man board: Z80 at 3.072 MHz (50,688 T-states a frame, 60.606 Hz), the memory map
+  with its mirrors, the auxiliary board's decryption and its decode latch, the IM 2 interrupt, the
+  watchdog, the dip switches, coin and start inputs.
+- Video: the tile layer and eight sprites, drawn upright (the cabinet's monitor is turned) as 224 × 288,
+  unscaled and centred on the 320 × 480 panel, sent strip by strip by DMA while the next strip is drawn.
+- Sound: the Namco WSG, three voices at 96 kHz, mixed to 48 kHz and streamed to a Bluetooth A2DP speaker.
+- Both cores: core 0 runs the Z80, the machine and the sound chip; core 1 draws and sends the picture and
+  runs the Bluetooth stream.
+- Thumb-2 on the Pico 2: the picture renderer, the sound chip and the Z80 core's dispatch are Cortex-M33
+  inline assembly; the Pico W runs the same code compiled for its M0+.
+- Plain Pac-Man hardware mode: programs written for Pac-Man boards (such as the PureMetal demo) run
+  from a "plain" pack.
+- Frame checking: `tools/grab.py` takes a frame from the board and compares every pixel with an
+  independent drawing of the same video state.
 
-## How it is built
+## Supported hardware
 
-| Part | File | What it does |
+| | Raspberry Pi Pico W | Raspberry Pi Pico 2 W |
 |---|---|---|
-| Machine | `rp2040/machine.pico` | MAME's `mspacman_map` with its mirrors: ROM write-protect, the $5000 latch, sound registers, sprite positions, IN0/IN1/DSW1/DSW2, watchdog (16 frames), vertical-blank interrupt with the IM 2 vector from `OUT (0),A` |
-| ROMs | `rp2040/romstore.pico`, `tools/pack_roms.py` | the ROM pack in flash at $40000, every file checked by CRC-32; the auxiliary board's decryption of u5/u6/u7 and its forty patches done on the board |
-| Video | `rp2040/video.pico` | tiles and sprites predecoded at boot in portrait orientation; 36 strips of 224 × 8 drawn on core 1 and sent by DMA while the next is drawn |
-| Sound | `rp2040/wsg.pico` | the Namco WSG's three voices at 96 kHz, two steps per 48 kHz sample, at vertical blank |
-| Bluetooth | `rp2040/audio_bt.pico` | streams the WSG ring from core 1; keeps the speaker's link key in the last flash sector |
-| Controls | `rp2040/input.pico` | the carrier's stick and buttons, plus USB serial keys |
-| CPU | `../Z80EmulatorPicoSeries/src/z80.pico` | the computed-goto Z80 core, built with `#Z80_MEM_HOOKS=1` |
+| Chip, clock | RP2040, 200 MHz | RP2350 (Cortex-M33), 150 MHz |
+| Display | LAFVIN ST7796 kit, 320 × 480 | the same |
+| Controls | the kit's joystick and two buttons | the same |
+| Sound | Bluetooth A2DP speaker | the same |
+| Status | tested on the board | tested on the board |
 
-Timing: the Z80 at 3.072 MHz, 50,688 T-states a frame, 60.606 frames a second (16.5 ms),
-paced by the microsecond timer. Core 0 runs the Z80, the machine and the sound; core 1 the
-display and the Bluetooth stream.
+The LAFVIN kit's wiring: LCD SCK/MOSI GP2/GP3 (SPI0), CS/DC/RST GP5/GP6/GP7, joystick GP26/GP27, buttons
+GP15 (A) and GP14 (B).
 
-The auxiliary board's decode latch is modelled (the start-up ROM test needs it). Not modelled:
-the cocktail cabinet's flip, coin lockout and lamps.
+## Performance (measured on the boards)
 
-On the Pico 2 the strip renderer (tiles and each sprite row) and the WSG voice are Thumb-2
-inline assembly (`#MSP_THUMB2=1`, set by `tools/port_rp2350.py`); the Pico W keeps the
-BASIC versions of the same code. `rp2040/Diagnostics/wsg_check.pico2w` checks the Thumb-2 voice
-against the BASIC loop on the board (300 random trials: 0 differ).
+A played game (coin and start at 14 and 16 s), the silent build, compiler 2026-10-25. Milliseconds of
+each core per second:
 
-## Measured (silent build, a played game, USB coin/start at 14/16 s, 2026-10-25)
+| Board | Frames a second | Core 0: Z80 / sound chip / idle | Core 1: drawing / panel wait / idle |
+|---|---|---|---|
+| Pico W, 200 MHz | 60.6, all shown, 0 dropped | 122 / 45 / 822 | 273 / 420 / 118 |
+| Pico 2 W, 150 MHz, before Thumb-2 | 60.6, all shown, 0 dropped | 116-119 / 30-53 / 820-841 | 257-269 / 653-666 / 25 |
+| Pico 2 W, 150 MHz, Thumb-2 | 60.6, all shown, 0 dropped | 106 / 14-20 / 860-867 | **91** / 827 / 26 |
 
-Ms. Pac-Man is a Midway US machine: 60.606 frames a second, and the panel shows every one.
-Per second of each core (ms):
+On the Pico 2 W, Thumb-2 draws the picture about 2.9 times faster, runs the sound chip about 2.5 times
+faster and the Z80 about 10 % faster. Core 1's spare time stays the same: it waits on the panel link
+(SPI at 75 MHz on the Pico 2 W), and the time saved moves into that wait. With the Bluetooth speaker
+connected, 125 audio packets a second went out with no underruns over about 40 s of play on both boards.
 
-| Board | fps shown | Core 0: Z80 / WSG / idle | Core 1: drawing / SPI wait / idle | Frame |
-|---|---|---|---|---|
-| Pico W, 200 MHz (BASIC) | 60.6, 0 dropped | 122 / 45 / 822 | 273 / 420 / 118 | — |
-| Pico 2 W, 150 MHz, BASIC | 60.6, 0 dropped | 116-119 / 30-53 / 820-841 | 257-269 / 653-666 / 25 | MATCH |
-| Pico 2 W, 150 MHz, Thumb-2 | 60.6, 0 dropped | 106 / 14-20 / 860-867 | **91** / 827 / 26 | MATCH |
+## Quick start
 
-The Thumb-2 row also has the Z80 core's Thumb-2 dispatch (Z80EmulatorPicoSeries 92c3267, the same
-`src/z80.pico2` the build includes): the Z80 itself went from 116-119 to 106 ms/s.
-Thumb-2 draws a frame about 2.9 times faster and makes the sound chip about 2.5 times faster
-(3.6 times in the board check). Core 1's idle time does not grow: the panel link (SPI at
-75 MHz on the Pico 2 W) is what core 1 waits on, and the time saved moves into that wait.
+1. Download the firmware for your board from
+   [Releases](https://github.com/ajtaji/MsPacmanEmulatorPicoSeries/releases/latest):
+   `mspacman-pico-w.uf2` (Pico W) or `mspacman-pico2-w.uf2` (Pico 2 W).
+2. Hold BOOTSEL while plugging the board in; it appears as a USB drive. Drag the `.uf2` onto it.
+3. Load your ROM set once (next section). The ROMs stay in flash across firmware updates.
+4. Insert a coin with **B**, start with **A**.
 
-## Build and run
-
-```
-py -3 tools/build.py --compiler <PureMetal Forge folder>\PureMetalForge.exe
-py -3 tools/build.py --compiler <...>\PureMetalForge.exe --port COM7 --seconds 30
-py -3 tools/port_rp2350.py      # regenerate rp2350/ from rp2040/, then build rp2350/mspacman.pico2w
-```
-
-The build refuses an image that would reach the ROM pack at flash offset $40000.
-For sound, copy `rp2040/mspacman.picow` outside the repository, put your speaker's address in
-its `Speaker` data, and build the copy with `--source`.
+The released firmware is silent: Bluetooth needs your speaker's address built in
+(see [Sound](#sound-bluetooth-speaker)).
 
 ## Loading the ROMs
 
-The files of MAME's `mspacman` set, found by CRC-32 in a folder or zip:
-`pacman.6e 6f 6h 6j`, `u5 u6 u7`, `5e 5f`, `82s123.7f`, `82s126.4a`, `82s126.1m`.
+You need the ROM set of the Ms. Pac-Man arcade board - for example from a board you own, or from a
+licensed release of the game. The program uses MAME's `mspacman` set; the files are found by their
+CRC-32, so any names work, in a folder or a zip:
+
+| Files | What they are |
+|---|---|
+| `pacman.6e`, `pacman.6f`, `pacman.6h`, `pacman.6j` | the Pac-Man program ROMs the board is built on |
+| `u5`, `u6`, `u7` | the auxiliary board's encrypted ROMs |
+| `5e`, `5f` | tiles and sprites |
+| `82s123.7f`, `82s126.4a`, `82s126.1m` | colour PROM, colour lookup PROM, sound waveform PROM |
+
+Pack them (the original files, each checked by CRC-32 - the board does the decryption), then write the
+pack to the board's flash at offset $40000 with PureMetal Forge (in PowerShell, quote `'$40000'`):
 
 ```
-py -3 tools/pack_roms.py <folder-or-zip> -o <outside the repo>\mspacman.pack
-PureMetalForge.exe --storage-write <...>\mspacman.pack --offset $40000 --port COM7 -t rp2040
+py -3 tools/pack_roms.py <folder-or-zip> -o mspacman.pack
+PureMetalForge.exe --storage-write mspacman.pack --offset '$40000' --port COM7 -t rp2040     (Pico W)
+PureMetalForge.exe --storage-write mspacman.pack --offset '$40000' --port COM6 -t rp2350     (Pico 2 W)
 ```
 
-A compiler without `--storage-write` sends the pack with the firmware instead, as a sparse asset
-(`--flash-assets`, the manifest `pack_roms.py` writes beside the pack). That UF2 then holds the
-ROMs, so `build.py` writes it only outside the repository:
+The upload reads the flash back and says VERIFIED. The firmware checks each file's CRC-32 on start-up and prints what it found over USB serial; a missing or
+wrong file is named. It also prints the CRC-32 of the address space it decrypted, which must equal the
+numbers `pack_roms.py` prints from its own decryption. Keep the pack out of any repository you publish.
+
+Writing other programs to the same flash range (for example the NES emulator's store at $50000 is clear
+of it, but a large firmware is not) overwrites the pack: load it again.
+
+## Sound (Bluetooth speaker)
+
+The speaker's address is built into the firmware. Copy `rp2040/mspacman.picow` (Pico W) or
+`rp2350/mspacman.pico2w` (Pico 2 W) to a folder outside the repository, put the address in its
+`Speaker` data (as a phone shows it: `AA:BB:CC:DD:EE:FF` becomes `Data.a $AA,$BB,$CC,$DD,$EE,$FF`),
+change its `XIncludeFile` to the absolute path of the repository's `main.pico`/`main.pico2`, and build
+the copy (below, `--source`). Put the speaker in pairing mode for the first start; after that the board
+reconnects by its saved key in about 1.5 s.
+
+## Controls
+
+| Board | Arcade |
+|---|---|
+| Joystick | the 4-way joystick |
+| B | coin |
+| A | 1 player start |
+| A + B | 2 player start |
+
+Over USB serial (115200, any terminal): `w a s d` move, `5` coin, `1` / `2` start, `t` the service
+switch, `0` release; `p` sends a frame for `tools/grab.py`, `i` the inputs, `z` the Z80's registers.
+The firmware prints a line a second: frames, each core's busy time, the Bluetooth stream.
+
+## Building from source
+
+Requirements: PureMetal Forge (the PureMetal compiler) - this repository was built and tested with the
+release of 2026-10-25 - and Python 3. The Z80 core lives in its own repository and is included from beside
+this one:
 
 ```
-py -3 tools/build.py --compiler <exe> --assets <outside>\assets-rp2040.json --output <outside>\mspacman-with-roms.uf2 --port COM7
+git clone https://github.com/ajtaji/Z80EmulatorPicoSeries
+git clone https://github.com/ajtaji/MsPacmanEmulatorPicoSeries
+cd MsPacmanEmulatorPicoSeries
 ```
 
-The firmware prints the CRC-32 of the address space it decoded; `pack_roms.py` prints the
-same numbers from its own decryption, and the two must match.
-
-## The desktop program (`desktop/`)
-
-The same machine as a Windows program in PureBasic, drawn with the Neon Arcade Display Engine:
-the game's screen scaled in the window, its sound on the PC's speakers (waveOut, paced by the
-sound card's clock: 48,000 samples = 60.606 frames a second), the keyboard, and debug panes -
-registers and flags, the disassembly at PC, a memory view, run / step / frame / breakpoint.
+Pico W (`rp2040/` is the source):
 
 ```
-& "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE /CONSTANT MSP_Z80_CORE$=<desktop Z80 core>
+py -3 tools/build.py --compiler <PureMetal Forge folder>\PureMetalForge.exe --output build\mspacman-pico-w.uf2
+```
+
+Pico 2 W (`rp2350/` is generated from `rp2040/` - never edit it by hand):
+
+```
+py -3 tools/port_rp2350.py
+py -3 tools/build.py --compiler <...>\PureMetalForge.exe --source rp2350/mspacman.pico2w --output build\mspacman-pico2-w.uf2
+```
+
+Add `--port COM7 --seconds 30` to send the image to a connected board and record its serial output for
+30 s. `build.py` refuses an image that would reach the ROM pack at $40000.
+
+## The desktop version (Windows)
+
+The same machine as a Windows program in PureBasic, drawn with the Neon Arcade Display Engine: the
+screen scaled in the window, the sound on the PC's speakers, the keyboard, and debug panes - registers
+and flags, the disassembly at PC, memory views, run / step / frame / breakpoint.
+
+```
+& "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE /CONSTANT GL_ENGINE_DIR$=<engine folder>/
 build\MsPacman.exe <ROM folder>
 ```
 
-Keys: arrows, 5 or C coin, 1 / 2 start, F5 run/pause, F10 step, F11 frame, F3 reset, M mute.
-`--log N` runs N frames without a window and prints a line a second (build with `/CONSOLE`);
-`--dump <file>` writes the last frame in the board's format for `tools/grab.py --file`.
-Without `MSP_Z80_CORE$` the build carries a stand-in CPU that runs nothing, and says so in its
-title bar and log.
+The Z80 core is taken from `../Z80EmulatorPicoSeries/desktop/` (or `/CONSTANT MSP_Z80_DIR$=<folder>/`).
+Keys: arrows, `5` or `C` coin, `1` / `2` start, F5 run/pause, F10 step, F11 frame, F3 reset, M mute.
+Other modes: `--log N` (no window, a line a second; build with `/CONSOLE`), `--wav <file>` (the sound
+chip's output), `--press 600:coin,660:start` (scripted inputs), `--shot <png> <frames>` (a screenshot),
+`--dump <file>` (a frame for `tools/grab.py --file`).
 
-## Checking the picture
+## The PureMetal demo for Pac-Man hardware
 
-`py -3 tools/grab.py --port COM7 --roms <set> --out captures/frame.png` takes a frame from the
-board and the state it was drawn from, draws that state independently the way MAME does, and
-compares every pixel.
+[demo/](demo/) is a program written in PureMetal for the compiler's Pac-Man board: a title, seven
+bouncing sprites, a ball moved by the stick, coin and start counters and a tune on the sound chip. Its
+built ROM set is in `demo/demo_roms/` - everything in it, graphics and PROMs included, is made from this
+repository (`demo.pacman`, `make_assets.py`), so it can be shared freely.
+
+```
+build\MsPacman.exe demo\demo_roms                         (desktop)
+py -3 tools/pack_roms.py --plain demo\demo_roms -o demo.pack   (then --storage-write it as above, at $40000)
+```
+
+## Testing
+
+What has been checked on the boards (Pico W and Pico 2 W with the LAFVIN kit):
+
+- Attract mode and a played game at 60.6 frames/s, 61 interrupts a second, no dropped frame, no watchdog
+  reset, for 30-60 s runs.
+- Frames taken over USB equal an independent drawing of the same video state in all 64,512 pixels
+  (`tools/grab.py`, which shares no code or tables with the firmware), on both boards, BASIC and
+  Thumb-2 renderers.
+- The decryption: the board's CRC-32s of the decoded address space equal `pack_roms.py`'s
+  (0000-3FFF 9F32CAE4, 8000-BFFF 6B637923).
+- The Thumb-2 sound chip against the plain version on the board: 300 random trials, every sample equal
+  (`rp2040/Diagnostics/wsg_check.pico2w`).
+- Bluetooth sound in a played game: the coin chirp, the intro tune and play sound, 125 packets/s, 0
+  underruns, on both boards.
+- The desktop version: the same start-up as the board, frames equal to the reference, 60.2-61 frames/s.
+
+## Known limits
+
+- The joystick's orientation for the portrait picture (`#MSP_STICK_TURN`) has not been checked by hand.
+- Not modelled: the cocktail cabinet's screen flip, coin lockout and the lamps.
+- A frame sent over USB for checking now and then arrives one 64-byte packet short; `grab.py` reports
+  it by length and a later frame is whole.
+- On the Pico 2 W, core 1 has little spare time with Bluetooth on (the panel link is the limit).
+
+## Repository layout
+
+```
+rp2040/          the Pico W source: machine, video, sound, Bluetooth, inputs, ROM store, main
+rp2350/          the Pico 2 W source, generated by tools/port_rp2350.py
+desktop/         the Windows version
+demo/            the PureMetal demo for Pac-Man hardware and its built ROMs
+tools/           build.py, pack_roms.py, port_rp2350.py, grab.py
+licenses/        third-party licences and credits
+```
+
+## Licence
+
+MIT (see [LICENSE](LICENSE)), copyright 2026 ajtaji.
+
+Firmware built with Bluetooth audio contains the CYW43439 Bluetooth firmware data, under its own
+licences (`licenses/CYW43439-*.txt`); the SBC encoder's coefficients are cross-checked against BlueZ
+(`licenses/SBC-TABLES.md`, LGPL-2.1). The hardware's behaviour was taken from MAME's drivers
+(BSD-3-Clause; what was taken is listed in `licenses/MAME.md`). Ms. Pac-Man and Pac-Man are trademarks
+of their owners; this project is not affiliated with them and includes none of their ROMs or artwork.

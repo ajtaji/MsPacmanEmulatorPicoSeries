@@ -1,6 +1,5 @@
-# Build outputs (released firmware/*.uf2 are committed on purpose)
+# Build outputs (released firmware goes to GitHub Releases, not the repository)
 *.uf2
-!firmware/*.uf2
 *.build.log
 *.board.log
 *.asm
@@ -27,12 +26,16 @@ pacman.*
 my-*.picow
 my-*.pico2w
 captures/
-# Local builds (a released, board-tested image is copied into firmware/ by hand)
+# Local builds
 build/
 # the demo's build outputs (rebuilt from demo.pacman and make_assets.py)
 demo/*.bin
 demo/*.hex
 demo/*.slots.txt
-demo/demo_roms/
 grab-stream.bin
 grab-stream.snap
+# the demo's ROM set is built from this repository (demo.pacman, make_assets.py): it is shared
+!demo/demo_roms/
+!demo/demo_roms/*
+# repository metadata for publishing (not part of the project)
+PUBLISH-META.txt
