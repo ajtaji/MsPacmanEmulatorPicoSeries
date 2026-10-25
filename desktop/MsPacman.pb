@@ -13,6 +13,9 @@
 ;   MsPacman.exe <ROM folder> --press 600:coin,660:start,900:left ...   inputs held for 6 frames
 ;                                           at those frames (coin start start2 up down left right)
 ;   MsPacman.exe <ROM folder> --log N --wav <file>   the sound chip's output saved as a WAV
+;   MsPacman.exe <ROM folder> --poke 900:4EBC:01,...   writes Z80 memory at those frames (hex)
+;   MsPacman.exe <ROM folder> --log N --sndtrace <file>   a line a frame: the sound driver's channel bytes
+;                                           and the sound chip's registers
 ;   MsPacman.exe <ROM folder> --mute ...    starts with the sound muted (M toggles it)
 ;   MsPacman.exe <ROM folder> --shot <png> <frames>
 ;                                           the window for that many frames, then its picture
@@ -134,11 +137,49 @@ Procedure WavClose()
   CloseFile(WavFile) : WavFile = 0
 EndProcedure
 
+; --sndtrace: a line a frame - the sound driver's six channel bytes ($4E9C effect 1-3, $4ECC song 1-3,
+; as the game left them for the next interrupt), the frame counter $4C84 and the game mode $4E00, and the
+; 32 sound registers the chip plays this frame.
+; The driver's inputs are taken when the Z80 reaches the driver ($2D0C, inside the interrupt), because the
+; game's own logic runs earlier in the same interrupt and may change them after vertical blank.
+Global SndTraceFile.i, SndTraceIn.s = " 00 00 00 00 00 00 00 00 00"
+Procedure SndTraceCapture()
+  Protected i.i
+  SndTraceIn = ""
+  For i = 0 To 5 : SndTraceIn + " " + RSet(Hex(Z80Mem($4E9C + i * 16)), 2, "0") : Next
+  SndTraceIn + " " + RSet(Hex(Z80Mem($4C84)), 2, "0") + " " + RSet(Hex(Z80Mem($4E00)), 2, "0") + " " + RSet(Hex(Z80Mem($4E13)), 2, "0")
+EndProcedure
+Procedure SndTrace()
+  Protected i.i, line.s = Str(MspFrames) + SndTraceIn + " |"
+  For i = 0 To 31 : line + " " + Hex(WsgRegs(i) & 15) : Next
+  WriteStringN(SndTraceFile, line, #PB_Ascii)
+EndProcedure
+
+; --poke "frame:addr:value,...": writes into the Z80's memory at the start of those frames (hex address and
+; value), e.g. to start one of the sound driver's effects or songs by its channel bit. "first-last:addr:value"
+; writes it at the start of every frame in that range.
+Global EmuPoke.s
+Procedure EmuPokes()
+  Protected i.i, item.s, span.s, first.i, last.i, n.i = CountString(EmuPoke, ",") + 1
+  For i = 1 To n
+    item = StringField(EmuPoke, i, ",")
+    span = StringField(item, 1, ":")
+    first = Val(StringField(span, 1, "-"))
+    last = first
+    If FindString(span, "-") : last = Val(StringField(span, 2, "-")) : EndIf
+    If MspFrames >= first And MspFrames <= last
+      Z80Mem(Val("$" + StringField(item, 2, ":")) & $FFFF) = Val("$" + StringField(item, 3, ":")) & 255
+    EndIf
+  Next
+EndProcedure
+
 ; Vertical blank: the picture, the frame's sound, the controls, the watchdog, the interrupt.
 Procedure EmuVblank()
+  If EmuPoke <> "" : EmuPokes() : EndIf
   If EmuTestPicture : EmuTestPictureFill() : EndIf
   VideoRender()
   WsgRender()
+  If SndTraceFile : SndTrace() : EndIf
   SoundQueue()
   If WavFile : WriteData(WavFile, @SndFrame(0), #MSP_FRAME_SAMPLES * 2) : WavSamples + #MSP_FRAME_SAMPLES : EndIf
   EmuInputs()
@@ -169,6 +210,18 @@ Procedure EmuFrame()
   Protected used.i
   If Z80Stopped
     EmuRunning = 0 : EmuStopReason = "the Z80 stopped (error " + Str(Z80Error) + ")"
+    ProcedureReturn
+  EndIf
+  If SndTraceFile                          ; an instruction at a time, to the next vertical blank
+    used = MspFrames
+    Repeat
+      EmuStep()
+      If Z80PC = $2D0C                      ; the sound driver: pokes again (the game's logic in this
+        If EmuPoke <> "" : EmuPokes() : EndIf ; interrupt may have changed them), then its inputs
+        SndTraceCapture()
+      EndIf
+      If Z80Stopped : Break : EndIf
+    Until MspFrames <> used
     ProcedureReturn
   EndIf
   If EmuBreakOn
@@ -249,6 +302,7 @@ Procedure LogRun(frames.i, dump.s)
   now = ElapsedMilliseconds()
   PrintN("done: " + Str(frames) + " frames in " + Str(now - t0) + " ms (" + StrF(frames * 1000.0 / ((now - t0) + 1), 1) + " frames/s unpaced)")
   If WavFile : PrintN("sound written: " + Str(WavSamples) + " samples") : WavClose() : EndIf
+  If SndTraceFile : CloseFile(SndTraceFile) : SndTraceFile = 0 : EndIf
   If dump <> ""
     If EmuDumpFrame(dump) : PrintN("frame written: " + dump) : Else : PrintN("could not write " + dump) : EndIf
   EndIf
@@ -596,6 +650,8 @@ For i = 0 To CountProgramParameters() - 1
     Case "--press" : i + 1 : EmuPress = ProgramParameter(i)
     Case "--mute" : SndMuted = 1
     Case "--wav" : i + 1 : WavOpen(ProgramParameter(i))
+    Case "--poke" : i + 1 : EmuPoke = ProgramParameter(i)
+    Case "--sndtrace" : i + 1 : SndTraceFile = CreateFile(#PB_Any, ProgramParameter(i))
     Case "--log-every" : i + 1 : LogEvery = Val(ProgramParameter(i)) : If LogEvery < 1 : LogEvery = 1 : EndIf
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))
     Default : folder = ProgramParameter(i)
