@@ -17,6 +17,7 @@
 ;   MsPacman.exe <ROM folder> --log N --sndtrace <file>   a line a frame: the sound driver's channel bytes
 ;                                           and the sound chip's registers
 ;   MsPacman.exe <ROM folder> --mute ...    starts with the sound muted (M toggles it)
+;   MsPacman.exe <ROM folder> --fullscreen-test <log>   full screen in and out twice, checked (synthetic)
 ;   MsPacman.exe <ROM folder> --pointer-test <log>   the window checks its controls with synthetic pointer
 ;                                           positions (never the real pointer); exit code = failures
 ;   MsPacman.exe <ROM folder> --shot <png> <frames>
@@ -24,8 +25,9 @@
 ;                                           saved and the program closes by itself
 ;                                           the fixed test picture (as Diagnostics/video_check)
 ;
-; KEYS: arrows = joystick, 5 or C = coin, 1 = 1P start, 2 = 2P start, F5 run/pause,
-;       F10 step one instruction, F11 one frame, F3 reset, M mute.
+; KEYS: the controls table (CtlInit; the Controls button shows it): arrows = joystick, 5 or C = coin,
+;       1 / 2 = 1P / 2P start, F5 run/pause, F10 step one instruction, F9 one frame, F3 reset, M mute,
+;       F11 full screen on/off, Esc leaves full screen.
 ; The ROMs are commercial: none are in the repository; the folder is the user's.
 
 EnableExplicit
@@ -326,6 +328,91 @@ Global NewMap PtCtl.PtRect()                    ; the Run panel's controls, by n
 Procedure PtNote(name.s, x.f, y.f, w.f, h.f)
   PtCtl(name)\x = x : PtCtl(name)\y = y : PtCtl(name)\w = w : PtCtl(name)\h = h
 EndProcedure
+
+; ---------------------------------------------------------------- the controls
+; ONE table, read by the input code (CtlHeld, CtlKey), by the Run panel's button labels and by the Controls
+; panel - so what the panel shows is what the keys do. The README's "Controls" section is copied from it.
+;   kind 0: an arcade input, held while one of its keys is down; bits as EmuHostHeld takes them (1 up,
+;           2 left, 4 right, 8 down, $20 coin, $100 1 player start, $200 2 player start); vk1/vk2 the keys
+;   kind 1: an emulator shortcut; key = the shortcut code the GL gadget reports; always = it works while
+;           typing in the breakpoint box too
+; The emulator reads the keyboard only (no gamepad). The arcade machine has no Esc key, so Esc only ever
+; leaves full screen; F11, the full-screen key, used to be "one frame", which is F9 now.
+Enumeration CtlAction 1
+  #ACT_RUN : #ACT_STEP : #ACT_FRAME : #ACT_RESET : #ACT_MUTE : #ACT_FULL : #ACT_LEAVE
+EndEnumeration
+Structure CtlEntry
+  kind.i : name.s : keys.s : vk1.i : vk2.i : bits.i : action.i : key.i : always.i
+EndStructure
+Global NewList Ctl.CtlEntry()
+Declare EnterFull()
+Declare LeaveFull()
+Global FullOn.i, ShowControls.i
+
+Procedure CtlAdd(kind.i, name.s, keys.s, vk1.i, vk2.i, bits.i, action.i, key.i, always.i = 0)
+  AddElement(Ctl())
+  Ctl()\kind = kind : Ctl()\name = name : Ctl()\keys = keys : Ctl()\vk1 = vk1 : Ctl()\vk2 = vk2
+  Ctl()\bits = bits : Ctl()\action = action : Ctl()\key = key : Ctl()\always = always
+EndProcedure
+
+Procedure CtlInit()
+  CtlAdd(0, "Joystick up", "Up arrow", #VK_UP, 0, 1, 0, 0)
+  CtlAdd(0, "Joystick down", "Down arrow", #VK_DOWN, 0, 8, 0, 0)
+  CtlAdd(0, "Joystick left", "Left arrow", #VK_LEFT, 0, 2, 0, 0)
+  CtlAdd(0, "Joystick right", "Right arrow", #VK_RIGHT, 0, 4, 0, 0)
+  CtlAdd(0, "Coin", "5 or C", '5', 'C', $20, 0, 0)
+  CtlAdd(0, "1 player start", "1", '1', 0, $100, 0, 0)
+  CtlAdd(0, "2 player start", "2", '2', 0, $200, 0, 0)
+  CtlAdd(1, "Run / pause", "F5", 0, 0, 0, #ACT_RUN, #PB_Shortcut_F5)
+  CtlAdd(1, "Step one instruction (paused)", "F10", 0, 0, 0, #ACT_STEP, #PB_Shortcut_F10)
+  CtlAdd(1, "Run one frame (paused)", "F9", 0, 0, 0, #ACT_FRAME, #PB_Shortcut_F9)
+  CtlAdd(1, "Reset", "F3", 0, 0, 0, #ACT_RESET, #PB_Shortcut_F3)
+  CtlAdd(1, "Sound on / off", "M", 0, 0, 0, #ACT_MUTE, #PB_Shortcut_M)
+  CtlAdd(1, "Full screen on / off", "F11", 0, 0, 0, #ACT_FULL, #PB_Shortcut_F11, 1)
+  CtlAdd(1, "Leave full screen", "Esc", 0, 0, 0, #ACT_LEAVE, #PB_Shortcut_Escape, 1)
+EndProcedure
+
+; The keys of a shortcut, for a button's label.
+Procedure.s CtlKeys(action.i)
+  ForEach Ctl()
+    If Ctl()\action = action : ProcedureReturn Ctl()\keys : EndIf
+  Next
+  ProcedureReturn ""
+EndProcedure
+
+; The arcade inputs held now.
+Procedure.i CtlHeld()
+  Protected k.i
+  ForEach Ctl()
+    If Ctl()\kind = 0
+      If (GetAsyncKeyState_(Ctl()\vk1) & $8000) Or (Ctl()\vk2 And (GetAsyncKeyState_(Ctl()\vk2) & $8000)) : k | Ctl()\bits : EndIf
+    EndIf
+  Next
+  ProcedureReturn k
+EndProcedure
+
+Procedure CtlDo(action.i)
+  Select action
+    Case #ACT_RUN : EmuRunning ! 1 : EmuStopReason = ""
+    Case #ACT_STEP : If EmuRunning = 0 : EmuStep() : VideoRender() : EndIf
+    Case #ACT_FRAME : If EmuRunning = 0 : EmuFrame() : EndIf
+    Case #ACT_RESET : MachineReset() : EmuTDebt = 0
+    Case #ACT_MUTE : SndMuted ! 1
+    Case #ACT_FULL : If FullOn : LeaveFull() : Else : EnterFull() : EndIf
+    Case #ACT_LEAVE : If FullOn : LeaveFull() : EndIf
+  EndSelect
+EndProcedure
+
+; A key the GL gadget reported (#PB_EventType_KeyDown).
+Procedure CtlKey(code.i)
+  ForEach Ctl()
+    If Ctl()\kind = 1 And Ctl()\key = code
+      If Neon_FocusID = 0 Or Ctl()\always : CtlDo(Ctl()\action) : EndIf
+      ProcedureReturn
+    EndIf
+  Next
+EndProcedure
+
 Global FpsShown.f, FpsCount.i, FpsMark.q, SpeedTStates.q, SpeedMark.q, SpeedMHz.f
 Global GetDpiForWindow_.i, ShotPath.s, ShotFrames.i
 Global EmuWasPaused.i, PaceResyncs.i
@@ -440,13 +527,17 @@ EndProcedure
 Procedure DrawControls(x.f, y.f, w.f, h.f)
   Protected bw.f = Neon_S(92), bh.f = Neon_S(28), gx.f = x + Neon_S(10), gy.f = y + Neon_S(34), lab.s
   Neon_Panel(x, y, w, h, "Run", 1.0, 0.85, 0.30, Neon_S(26))
-  If EmuRunning : lab = "Pause  F5" : Else : lab = "Run  F5" : EndIf
+  If EmuRunning : lab = "Pause  " : Else : lab = "Run  " : EndIf
+  lab + CtlKeys(#ACT_RUN)
   PtNote("pause", gx, gy, bw, bh) : PtNote("step", gx + bw + Neon_S(6), gy, bw, bh)
   PtNote("frame", gx + 2 * (bw + Neon_S(6)), gy, bw, bh) : PtNote("reset", gx + 3 * (bw + Neon_S(6)), gy, bw, bh)
   If Neon_Button(gx, gy, bw, bh, lab, EmuRunning) : EmuRunning ! 1 : EmuStopReason = "" : EndIf
-  If Neon_Button(gx + bw + Neon_S(6), gy, bw, bh, "Step  F10", #False, Bool(EmuRunning = 0)) : EmuStep() : VideoRender() : EndIf
-  If Neon_Button(gx + 2 * (bw + Neon_S(6)), gy, bw, bh, "Frame  F11", #False, Bool(EmuRunning = 0)) : EmuFrame() : EndIf
-  If Neon_Button(gx + 3 * (bw + Neon_S(6)), gy, bw, bh, "Reset  F3") : MachineReset() : EmuTDebt = 0 : EndIf
+  If Neon_Button(gx + bw + Neon_S(6), gy, bw, bh, "Step  " + CtlKeys(#ACT_STEP), #False, Bool(EmuRunning = 0)) : CtlDo(#ACT_STEP) : EndIf
+  If Neon_Button(gx + 2 * (bw + Neon_S(6)), gy, bw, bh, "Frame  " + CtlKeys(#ACT_FRAME), #False, Bool(EmuRunning = 0)) : CtlDo(#ACT_FRAME) : EndIf
+  If Neon_Button(gx + 3 * (bw + Neon_S(6)), gy, bw, bh, "Reset  " + CtlKeys(#ACT_RESET)) : CtlDo(#ACT_RESET) : EndIf
+  PtNote("controls", gx + 4 * (bw + Neon_S(6)), gy, bw, bh) : PtNote("full", gx + 5 * (bw + Neon_S(6)), gy, Neon_S(130), bh)
+  If Neon_Button(gx + 4 * (bw + Neon_S(6)), gy, bw, bh, "Controls", ShowControls) : ShowControls ! 1 : EndIf
+  If Neon_Button(gx + 5 * (bw + Neon_S(6)), gy, Neon_S(130), bh, "Full screen  " + CtlKeys(#ACT_FULL)) : CtlDo(#ACT_FULL) : EndIf
   gy + bh + Neon_S(8)
   PtNote("focus", gx + Neon_S(70), gy, Neon_S(80), bh) : PtNote("clear", gx + Neon_S(160), gy, Neon_S(70), bh)
   PtNote("coin", gx + Neon_S(240), gy, Neon_S(80), bh) : PtNote("1p", gx + Neon_S(326), gy, Neon_S(80), bh)
@@ -490,14 +581,186 @@ Procedure SizeGlobals()
   If Abs(UiScale - FontScale) > 0.01 : BuildFonts() : EndIf
 EndProcedure
 
+; ---------------------------------------------------------------- full screen
+; A borderless window covering the monitor the window is on (no display-mode change), drawing only the
+; game: its 224 x 288 picture at the arcade monitor's real shape - a 4:3 tube turned on its side, so 3:4 -
+; as large as fits, centred, black around it. A whole-number scale is taken when it loses at most a tenth
+; of the height. The windowed placement is saved and put back exactly; the scale is measured again on the
+; way in and out (SizeGlobals). The cursor hides after 2 s without moving and shows again when moved.
+Declare SaveWindowShot(path.s)
+Global FullPlace.WINDOWPLACEMENT, FullStyle.i, FullMonL.i, FullMonT.i, FullMonR.i, FullMonB.i
+Global FullDrawX.f, FullDrawY.f, FullDrawW.f, FullDrawH.f, FullShot.s
+Global FullLastMX.i = -1, FullLastMY.i = -1, FullMovedMs.q, FullCursorHidden.i
+Global ScreenSprite34.GLSprite                  ; the screen texture at the monitor's shape: 216 x 288 = 3:4
+
+Procedure EnterFull()
+  Protected hwnd.i = WindowID(Win), mi.MONITORINFO
+  If FullOn : ProcedureReturn : EndIf
+  FullPlace\length = SizeOf(WINDOWPLACEMENT)
+  GetWindowPlacement_(hwnd, @FullPlace)
+  FullStyle = GetWindowLongPtr_(hwnd, #GWL_STYLE)
+  mi\cbSize = SizeOf(MONITORINFO)
+  GetMonitorInfo_(MonitorFromWindow_(hwnd, #MONITOR_DEFAULTTONEAREST), @mi)
+  FullMonL = mi\rcMonitor\left : FullMonT = mi\rcMonitor\top : FullMonR = mi\rcMonitor\right : FullMonB = mi\rcMonitor\bottom
+  SetWindowLongPtr_(hwnd, #GWL_STYLE, (FullStyle & ~#WS_OVERLAPPEDWINDOW) | #WS_POPUP)
+  SetWindowPos_(hwnd, #HWND_TOP, FullMonL, FullMonT, FullMonR - FullMonL, FullMonB - FullMonT, #SWP_FRAMECHANGED | #SWP_NOOWNERZORDER | #SWP_SHOWWINDOW)
+  FullOn = 1 : SizedW = -1 : FullMovedMs = ElapsedMilliseconds() : FullLastMX = -1
+  SetActiveGadget(Gl)
+EndProcedure
+
+Procedure LeaveFull()
+  Protected hwnd.i = WindowID(Win)
+  If FullOn = 0 : ProcedureReturn : EndIf
+  SetWindowLongPtr_(hwnd, #GWL_STYLE, FullStyle)
+  SetWindowPlacement_(hwnd, @FullPlace)
+  SetWindowPos_(hwnd, 0, 0, 0, 0, 0, #SWP_NOMOVE | #SWP_NOSIZE | #SWP_NOZORDER | #SWP_NOOWNERZORDER | #SWP_FRAMECHANGED)
+  If FullCursorHidden : ShowCursor_(#True) : FullCursorHidden = 0 : EndIf
+  FullOn = 0 : SizedW = -1
+  SetActiveGadget(Gl)
+EndProcedure
+
+; The cursor in full screen: hidden after 2 s still, shown when it moves.
+Procedure FullCursor()
+  Protected mx.i = WindowMouseX(Win), my.i = WindowMouseY(Win)
+  If mx <> FullLastMX Or my <> FullLastMY
+    FullLastMX = mx : FullLastMY = my : FullMovedMs = ElapsedMilliseconds()
+    If FullCursorHidden : ShowCursor_(#True) : FullCursorHidden = 0 : EndIf
+  ElseIf FullCursorHidden = 0 And ElapsedMilliseconds() - FullMovedMs > 2000
+    ShowCursor_(#False) : FullCursorHidden = 1
+  EndIf
+EndProcedure
+
+; Full screen: only the game.
+Procedure DrawFullScreen()
+  Protected k.f, ki.i
+  glBindFramebuffer(#GL_FRAMEBUFFER, 0)
+  glDisable_(#GL_SCISSOR_TEST)
+  glViewport_(0, 0, PhysW, PhysH)
+  glClearColor_(0.0, 0.0, 0.0, 1.0) : glClear_(#GL_COLOR_BUFFER_BIT)
+  ScreenTextureUpload()
+  ScreenSprite34\TextureID = ScreenTex : ScreenSprite34\Width = #VID_H * 3 / 4 : ScreenSprite34\Height = #VID_H
+  k = PhysH / #VID_H                                   ; the height fills the monitor ...
+  If ScreenSprite34\Width * k > PhysW : k = PhysW / ScreenSprite34\Width : EndIf   ; ... unless the width does not fit
+  ki = Int(k)
+  If ki >= 1 And ki >= k * 0.9 : k = ki : EndIf        ; a whole-number scale, when it loses at most a tenth
+  FullDrawW = ScreenSprite34\Width * k : FullDrawH = #VID_H * k
+  FullDrawX = (PhysW - FullDrawW) / 2 : FullDrawY = (PhysH - FullDrawH) / 2
+  DrawGLSprite(@ScreenSprite34, FullDrawX, FullDrawY, 0.0, k, 1.0, 1.0, 1.0, 1.0, #True, -1, -1, -1, -1, #True)
+  If FullShot <> "" : SaveWindowShot(FullShot) : FullShot = "" : EndIf
+  SetGadgetAttribute(Gl, #PB_OpenGL_FlipBuffers, #True)
+  FullCursor()
+EndProcedure
+
+; The Controls panel: the controls table, as the input code reads it.
+Procedure DrawControlsPanel(x.f, y.f, w.f, h.f)
+  Protected cy.f = y + Neon_S(40), lh.f = *Neon_FontUI\LineHeight + Neon_S(4), kind.i = -1, col.f = x + Neon_S(250)
+  Neon_Panel(x, y, w, h, "Controls (keyboard; no gamepad)", 1.0, 0.85, 0.30, Neon_S(26))
+  PtNote("close", x + w - Neon_S(90), y + Neon_S(4), Neon_S(80), Neon_S(22))
+  If Neon_Button(x + w - Neon_S(90), y + Neon_S(4), Neon_S(80), Neon_S(22), "Close") : ShowControls = 0 : EndIf
+  ForEach Ctl()
+    If Ctl()\kind <> kind
+      kind = Ctl()\kind
+      If kind = 0 : Neon_Text(*Neon_FontBold, x + Neon_S(12), cy, "The arcade machine", 1.0, 0.85, 0.30)
+      Else : cy + Neon_S(8) : Neon_Text(*Neon_FontBold, x + Neon_S(12), cy, "The emulator", 1.0, 0.85, 0.30)
+      EndIf
+      cy + lh
+    EndIf
+    Neon_Text(*Neon_FontUI, x + Neon_S(24), cy, Ctl()\name, 0.85, 0.9, 0.95)
+    Neon_Text(*Neon_FontUI, col, cy, Ctl()\keys, 0.45, 0.95, 1.0)
+    cy + lh
+  Next
+EndProcedure
+
+; ---------------------------------------------------------------- --fullscreen-test
+; Synthetic, like --pointer-test: in by the Full screen button (a synthetic press) and out by Esc, then in
+; and out by F11 - both through the same key handler as the keyboard. Each time in: the window covers its
+; monitor exactly, the game is 3:4 and centred, the emulation keeps 60.6 frames a second; each time out:
+; the windowed placement, style, client size and scale are back exactly. Saves one picture of this window
+; in full screen (<log>.png).
+Global FsOn.i, FsFile.s, FsLog.s, FsFails.i, FsPass.i, FsCycle.i, FsState.i, FsMs.q, FsF0.q
+Global FsRect.RECT, FsClient.RECT, FsStyle.i, FsScale.f
+
+Procedure FsCheck(ok.i, what.s)
+  If ok : FsLog + "PASS " + what + #LF$ : Else : FsLog + "FAIL " + what + #LF$ : FsFails + 1 : EndIf
+EndProcedure
+
+Procedure.i FsDone()
+  ProcedureReturn Bool(FsCycle >= 2)
+EndProcedure
+
+; Called after each window pass.
+Procedure FsStep()
+  Protected r.RECT, c.RECT, aspect.f, fps.f, gapL.f, gapR.f, gapT.f, gapB.f, how.s
+  FsPass + 1
+  If FsPass < 40 Or FsCycle >= 2 : ProcedureReturn : EndIf
+  If FsCycle = 0 : how = "the Full screen button, out by Esc" : Else : how = "F11, out by F11" : EndIf
+  Select FsState
+    Case 0                                            ; windowed: note everything, then go in
+      GetWindowRect_(WindowID(Win), @FsRect) : GetClientRect_(WindowID(Win), @FsClient)
+      FsStyle = GetWindowLongPtr_(WindowID(Win), #GWL_STYLE) : FsScale = Neon_UIScale
+      FsLog + "cycle " + Str(FsCycle + 1) + ", in by " + how + #LF$
+      FsLog + "  windowed: window " + Str(FsRect\left) + "," + Str(FsRect\top) + " " + Str(FsRect\right - FsRect\left) + "x" +
+              Str(FsRect\bottom - FsRect\top) + ", client " + Str(FsClient\right) + "x" + Str(FsClient\bottom) + ", scale " + StrF(FsScale, 3) + #LF$
+      If FsCycle = 0                                  ; a synthetic press where the button was drawn
+        PtX = PtCtl("full")\x + PtCtl("full")\w / 2 : PtY = PtCtl("full")\y + PtCtl("full")\h / 2 : PtDown = 1
+      Else
+        CtlKey(#PB_Shortcut_F11)
+      EndIf
+      FsState = 1 : FsMs = ElapsedMilliseconds()
+    Case 1                                            ; the release, then let it settle for a second
+      PtDown = 0 : PtX = -100 : PtY = -100
+      If ElapsedMilliseconds() - FsMs > 1000 : FsF0 = EmuFrameCount : FsMs = ElapsedMilliseconds() : FsState = 2 : EndIf
+    Case 2                                            ; three seconds in full screen, then judge it
+      If ElapsedMilliseconds() - FsMs < 3000 : ProcedureReturn : EndIf
+      fps = (EmuFrameCount - FsF0) * 1000.0 / (ElapsedMilliseconds() - FsMs)
+      GetWindowRect_(WindowID(Win), @r) : GetClientRect_(WindowID(Win), @c)
+      FsCheck(FullOn, "  full screen is on")
+      FsCheck(Bool(r\left = FullMonL And r\top = FullMonT And r\right = FullMonR And r\bottom = FullMonB),
+              "  the window covers its monitor: " + Str(r\left) + "," + Str(r\top) + "-" + Str(r\right) + "," + Str(r\bottom) +
+              " (monitor " + Str(FullMonL) + "," + Str(FullMonT) + "-" + Str(FullMonR) + "," + Str(FullMonB) + ")")
+      FsCheck(Bool(c\right = PhysW And c\bottom = PhysH And PhysW = FullMonR - FullMonL And PhysH = FullMonB - FullMonT),
+              "  client and canvas are the monitor's size: " + Str(PhysW) + "x" + Str(PhysH))
+      aspect = FullDrawW / FullDrawH
+      FsCheck(Bool(Abs(aspect - 0.75) < 0.002), "  the game is 3:4: " + StrF(FullDrawW, 1) + " x " + StrF(FullDrawH, 1) + " = " + StrF(aspect, 4))
+      gapL = FullDrawX : gapR = PhysW - FullDrawX - FullDrawW : gapT = FullDrawY : gapB = PhysH - FullDrawY - FullDrawH
+      FsCheck(Bool(Abs(gapL - gapR) <= 1 And Abs(gapT - gapB) <= 1 And gapL >= 0 And gapT >= 0),
+              "  centred: bars left " + StrF(gapL, 1) + " right " + StrF(gapR, 1) + " top " + StrF(gapT, 1) + " bottom " + StrF(gapB, 1))
+      FsCheck(Bool(Abs(Neon_UIScale - MeasuredScale()) < 0.01), "  the scale measured again: " + StrF(Neon_UIScale, 3))
+      FsCheck(Bool(fps > 59.6 And fps < 61.6), "  the emulation keeps time: " + StrF(fps, 2) + " frames a second over 3 s")
+      FsLog + "  (cursor " + StringField("shown,hidden", FullCursorHidden + 1, ",") + " after 3 s without a move here)" + #LF$
+      If FsCycle = 0 : FullShot = FsFile + ".png" : EndIf
+      FsState = 3 : FsMs = ElapsedMilliseconds()
+    Case 3                                            ; out
+      If FsCycle = 0 : CtlKey(#PB_Shortcut_Escape) : Else : CtlKey(#PB_Shortcut_F11) : EndIf
+      FsState = 4 : FsMs = ElapsedMilliseconds()
+    Case 4                                            ; a second later: everything as it was?
+      If ElapsedMilliseconds() - FsMs < 1000 : ProcedureReturn : EndIf
+      GetWindowRect_(WindowID(Win), @r) : GetClientRect_(WindowID(Win), @c)
+      FsCheck(Bool(FullOn = 0), "  full screen is off")
+      FsCheck(Bool(r\left = FsRect\left And r\top = FsRect\top And r\right = FsRect\right And r\bottom = FsRect\bottom),
+              "  the windowed rectangle is back exactly: " + Str(r\left) + "," + Str(r\top) + " " + Str(r\right - r\left) + "x" + Str(r\bottom - r\top))
+      FsCheck(Bool(c\right = FsClient\right And c\bottom = FsClient\bottom), "  the client size is back: " + Str(c\right) + "x" + Str(c\bottom))
+      FsCheck(Bool(GetWindowLongPtr_(WindowID(Win), #GWL_STYLE) = FsStyle), "  the window style is back")
+      FsCheck(Bool(Abs(Neon_UIScale - FsScale) < 0.01 And Abs(Neon_UIScale - MeasuredScale()) < 0.01), "  the scale measured again: " + StrF(Neon_UIScale, 3))
+      FsCheck(Bool(FullCursorHidden = 0), "  the cursor is shown")
+      FsCycle + 1 : FsState = 0
+      If FsCycle >= 2 : FsLog + "fullscreen-test: " + Str(FsFails) + " failures" + #LF$ : EndIf
+  EndSelect
+EndProcedure
+
 Procedure DrawWindow()
   Protected margin.f = Neon_S(12), sc.i, sw.f, sh.f, px.f, rx.f, rw.f, y.f, hh.f
   Protected tp.q = MicroNow()
   ; one window, one GL context: it is made current once, in WindowRun (doing it every pass cost ~7 ms)
   SizeGlobals()
+  If FullOn                                       ; full screen: the game alone
+    DrawFullScreen()
+    Wheel = 0 : KeyCode = 0 : KeyChar = 0
+    ProcedureReturn
+  EndIf
   ; WindowMouseX/Y as they are (physical in a DPI-aware window); --pointer-test feeds its own point the same way
   Protected mx.i = WindowMouseX(Win), my.i = WindowMouseY(Win), down.b = MouseDown, wh.i = Wheel
-  If PtOn : mx = PtX : my = PtY : down = PtDown : wh = PtWheel : EndIf
+  If PtOn Or FsOn : mx = PtX : my = PtY : down = PtDown : wh = PtWheel : EndIf
   Neon_ChromeBeginFrame(mx, my, down, wh, KeyCode, KeyChar, 1.0 / 60.0)
   glBindFramebuffer(#GL_FRAMEBUFFER, 0)
   glDisable_(#GL_SCISSOR_TEST)
@@ -523,9 +786,13 @@ Procedure DrawWindow()
   DrawRegisters(rx, margin + hh + margin, rw, Neon_S(190))
   PaneUs(2) + MicroNow() - tp : tp = MicroNow()
   y = margin + hh + margin + Neon_S(190) + margin
-  DrawDisassembly(rx, y, rw * 0.5 - margin / 2, PhysH - y - margin)
-  PaneUs(3) + MicroNow() - tp : tp = MicroNow()
-  DrawMemory(rx + rw * 0.5 + margin / 2, y, rw * 0.5 - margin / 2, PhysH - y - margin)
+  If ShowControls                                 ; the Controls panel in place of the two lower panes
+    DrawControlsPanel(rx, y, rw, PhysH - y - margin)
+  Else
+    DrawDisassembly(rx, y, rw * 0.5 - margin / 2, PhysH - y - margin)
+    PaneUs(3) + MicroNow() - tp : tp = MicroNow()
+    DrawMemory(rx + rw * 0.5 + margin / 2, y, rw * 0.5 - margin / 2, PhysH - y - margin)
+  EndIf
   PaneUs(4) + MicroNow() - tp : tp = MicroNow()
   Neon_ChromeEndFrame()
   If ShotPath <> "" And EmuFrameCount >= ShotFrames : SaveWindowShot(ShotPath) : ShotFrames = -1 : EndIf
@@ -538,14 +805,7 @@ Procedure.i HostKeys()
   Protected k.i
   If GetForegroundWindow_() <> WindowID(Win) : ProcedureReturn 0 : EndIf
   If Neon_FocusID <> 0 : ProcedureReturn 0 : EndIf      ; typing into the breakpoint box
-  If GetAsyncKeyState_(#VK_UP) & $8000 : k | 1 : EndIf
-  If GetAsyncKeyState_(#VK_LEFT) & $8000 : k | 2 : EndIf
-  If GetAsyncKeyState_(#VK_RIGHT) & $8000 : k | 4 : EndIf
-  If GetAsyncKeyState_(#VK_DOWN) & $8000 : k | 8 : EndIf
-  If (GetAsyncKeyState_('5') & $8000) Or (GetAsyncKeyState_('C') & $8000) : k | $20 : EndIf
-  If GetAsyncKeyState_('1') & $8000 : k | $100 : EndIf
-  If GetAsyncKeyState_('2') & $8000 : k | $200 : EndIf
-  ProcedureReturn k
+  ProcedureReturn CtlHeld()                            ; the controls table
 EndProcedure
 
 ; What the window drew, saved as a PNG (the --shot mode).
@@ -591,7 +851,7 @@ Global NewList PtSteps.PtStepT()
 
 Procedure.s PtState()
   ProcedureReturn "running=" + Str(EmuRunning) + " instr=" + Str(EmuInstr) + " frames=" + Str(EmuFrameCount) + " pc=" + Hex(Z80PC) +
-                  " held=" + Hex(EmuHeldKeys) + " focus=" + Str(Neon_FocusID) + " tab=" + Str(MemTab) + " break=" + BreakText\s
+                  " held=" + Hex(EmuHeldKeys) + " focus=" + Str(Neon_FocusID) + " tab=" + Str(MemTab) + " controls=" + Str(ShowControls) + " break=" + BreakText\s
 EndProcedure
 
 Procedure PtAdd(x.f, y.f, id.i, kind.i, what.s, expect.s = "")
@@ -627,11 +887,17 @@ Procedure PtBuild()
     PtAdd(x + w - m, y + h - m, Neon_HotPrev(tabs())\id, 1, "press, bottom-right corner", "tab" + Str(k))
     k + 1
   Next
-  ; the memory pane at the bottom of the window: a wheel turn at four points
+  ; the memory pane at the bottom of the window: a wheel turn at four points; then the Controls button,
+  ; which opens the Controls panel over the lower panes and closes it (the Full screen button is
+  ; --fullscreen-test's)
   PtAdd(MemPaneX + m, MemPaneY + MemPaneH / 2, -1, 2, "wheel, left edge")
   PtAdd(MemPaneX + MemPaneW - m, MemPaneY + MemPaneH / 2, -1, 2, "wheel, right edge")
   PtAdd(MemPaneX + MemPaneW / 2, MemPaneY + Neon_S(70), -1, 2, "wheel, top rows")
   PtAdd(MemPaneX + MemPaneW / 2, MemPaneY + MemPaneH - m, -1, 2, "wheel, bottom edge")
+  If FindMapElement(PtCtl(), "controls")
+    PtAdd(PtCtl()\x + PtCtl()\w - m, PtCtl()\y + PtCtl()\h - m, 0, 1, "press controls (opens)", "controls1")
+    PtAdd(PtCtl()\x + m, PtCtl()\y + m, 0, 1, "press controls (closes)", "controls0")
+  EndIf
   PtLog + "scale " + StrF(Neon_UIScale, 3) + "  logical " + Str(Util_WinWidth) + "x" + Str(Util_WinHeight) + "  physical " +
           Str(PhysW) + "x" + Str(PhysH) + "  UI_UseCRT " + Str(UI_UseCRT) + "  controls " + Str(Neon_HotPrevCount) + #LF$
 EndProcedure
@@ -648,6 +914,8 @@ Procedure.i PtExpect(e.s, before.s, after.s)
     Case "1p"    : ProcedureReturn Bool(Val("$" + StringField(StringField(after, 5, " "), 2, "=")) & $100)
   EndSelect
   If Left(e, 3) = "tab" : ProcedureReturn Bool(FindString(after, "tab=" + Mid(e, 4) + " ")) : EndIf
+  If e = "controls1" : ProcedureReturn Bool(FindString(before, "controls=0") And FindString(after, "controls=1")) : EndIf
+  If e = "controls0" : ProcedureReturn Bool(FindString(before, "controls=1") And FindString(after, "controls=0")) : EndIf
   ProcedureReturn 0
 EndProcedure
 
@@ -703,6 +971,7 @@ Procedure WindowRun(folder.s)
                     #PB_Window_SystemMenu | #PB_Window_ScreenCentered | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_SizeGadget)
   If Gl = 0 : MessageRequester("Ms. Pac-Man", "Could not open an OpenGL window.") : ProcedureReturn : EndIf
   Win = Util_MainWindowID
+  CtlInit()
   ; the engine bends the mouse for its CRT curvature unless told otherwise (UI_UseCRT defaults to #True);
   ; this window draws flat, so a bent mouse missed the right-hand ends of controls by up to 10 px
   UI_UseCRT = #False
@@ -729,15 +998,7 @@ Procedure WindowRun(folder.s)
               Case #PB_EventType_MouseWheel : Wheel + GetGadgetAttribute(Gl, #PB_OpenGL_WheelDelta)
               Case #PB_EventType_KeyDown
                 KeyCode = GetGadgetAttribute(Gl, #PB_OpenGL_Key)
-                If Neon_FocusID = 0
-                  Select KeyCode
-                    Case #PB_Shortcut_F5 : EmuRunning ! 1 : EmuStopReason = ""
-                    Case #PB_Shortcut_F10 : If EmuRunning = 0 : EmuStep() : VideoRender() : EndIf
-                    Case #PB_Shortcut_F11 : If EmuRunning = 0 : EmuFrame() : EndIf
-                    Case #PB_Shortcut_F3 : MachineReset() : EmuTDebt = 0
-                    Case #PB_Shortcut_M : SndMuted ! 1
-                  EndSelect
-                EndIf
+                CtlKey(KeyCode)                        ; the controls table
               Case #PB_EventType_Input : KeyChar = GetGadgetAttribute(Gl, #PB_OpenGL_Input)
             EndSelect
           EndIf
@@ -777,12 +1038,18 @@ Procedure WindowRun(folder.s)
       PtStep()
       If PtFinished() : quit = 1 : EndIf
     EndIf
+    If FsOn
+      FsStep()
+      If FsDone() : quit = 1 : EndIf
+    EndIf
   Until quit
   SoundClose()
-  If PtOn                                         ; --pointer-test: the log, and the failures as the exit code
-    Protected f.i = CreateFile(#PB_Any, PtFile)
-    If f : WriteString(f, PtLog) : CloseFile(f) : EndIf
-    End PtFails
+  If FullOn : LeaveFull() : EndIf
+  If PtOn Or FsOn                                 ; the tests: the log, and the failures as the exit code
+    Protected f.i
+    If PtOn : f = CreateFile(#PB_Any, PtFile) : If f : WriteString(f, PtLog) : CloseFile(f) : EndIf : EndIf
+    If FsOn : f = CreateFile(#PB_Any, FsFile) : If f : WriteString(f, FsLog) : CloseFile(f) : EndIf : EndIf
+    End PtFails + FsFails
   EndIf
 EndProcedure
 
@@ -809,6 +1076,7 @@ For i = 0 To CountProgramParameters() - 1
     Case "--wav" : i + 1 : WavOpen(ProgramParameter(i))
     Case "--poke" : i + 1 : EmuPoke = ProgramParameter(i)
     Case "--pointer-test" : i + 1 : PtFile = ProgramParameter(i) : PtOn = 1 : SndMuted = 1
+    Case "--fullscreen-test" : i + 1 : FsFile = ProgramParameter(i) : FsOn = 1
     Case "--sndtrace" : i + 1 : SndTraceFile = CreateFile(#PB_Any, ProgramParameter(i))
     Case "--log-every" : i + 1 : LogEvery = Val(ProgramParameter(i)) : If LogEvery < 1 : LogEvery = 1 : EndIf
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))

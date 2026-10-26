@@ -123,6 +123,34 @@ Over USB serial (115200, any terminal): `w a s d` move, `5` coin, `1` / `2` star
 switch, `0` release; `p` sends a frame for `tools/grab.py`, `i` the inputs, `z` the Z80's registers.
 The firmware prints a line a second: frames, each core's busy time, the Bluetooth stream.
 
+### The desktop version
+
+The keyboard only (no gamepad). The same list is in the program: the **Controls** button.
+
+| Arcade | Key |
+|---|---|
+| Joystick up | Up arrow |
+| Joystick down | Down arrow |
+| Joystick left | Left arrow |
+| Joystick right | Right arrow |
+| Coin | 5 or C |
+| 1 player start | 1 |
+| 2 player start | 2 |
+
+| Emulator | Key |
+|---|---|
+| Run / pause | F5 |
+| Step one instruction (paused) | F10 |
+| Run one frame (paused) | F9 |
+| Reset | F3 |
+| Sound on / off | M |
+| Full screen on / off | F11 |
+| Leave full screen | Esc |
+
+Full screen fills the monitor the window is on with the game alone, at the arcade monitor's shape
+(3:4), centred; the pointer hides after 2 s without moving. The machine has no Esc key, so Esc only
+leaves full screen. One frame used to be F11; it is F9, since F11 is full screen.
+
 ## Building from source
 
 Requirements: PureMetal Forge (the PureMetal compiler) - this repository was built and tested with the
@@ -172,13 +200,16 @@ cd MsPacmanEmulatorPicoSeries
 
 The engine and the Z80 core are found beside this repository; elsewhere, say where with
 `/CONSTANT GL_ENGINE_DIR$=<folder>/` and `/CONSTANT MSP_Z80_DIR$=<Z80 repository>/desktop/` (trailing slash).
-Keys: arrows, `5` or `C` coin, `1` / `2` start, F5 run/pause, F10 step, F11 frame, F3 reset, M mute.
+Keys: see [Controls](#the-desktop-version) - also the **Controls** button in the window. **Full screen**
+(the button or F11, Esc leaves) shows the game alone at its 3:4 shape.
 Other modes: `--log N` (no window, a line a second; build with `/CONSOLE`), `--wav <file>` (the sound
 chip's output), `--press 600:coin,660:start` (scripted inputs), `--shot <png> <frames>` (a screenshot),
 `--dump <file>` (a frame for `tools/grab.py --file`).
 `--pointer-test <log>` checks every control with synthetic pointer positions (four points on each, a press on
 each button, a wheel turn on the memory pane) without touching the real pointer; its exit code is the number
-of failures.
+of failures. `--fullscreen-test <log>` goes in and out of full screen twice (by the button and Esc, then by
+F11) and checks the monitor rectangle, the 3:4 centred picture, 60.6 frames a second and the window put back
+exactly; it covers the monitor for about 10 s.
 
 ## The PureMetal demo for Pac-Man hardware
 
