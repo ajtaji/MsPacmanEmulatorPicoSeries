@@ -17,6 +17,8 @@
 ;   MsPacman.exe <ROM folder> --log N --sndtrace <file>   a line a frame: the sound driver's channel bytes
 ;                                           and the sound chip's registers
 ;   MsPacman.exe <ROM folder> --mute ...    starts with the sound muted (M toggles it)
+;   MsPacman.exe <ROM folder> --pointer-test <log>   the window checks its controls with synthetic pointer
+;                                           positions (never the real pointer); exit code = failures
 ;   MsPacman.exe <ROM folder> --shot <png> <frames>
 ;                                           the window for that many frames, then its picture
 ;                                           saved and the program closes by itself
@@ -315,6 +317,15 @@ Global Win.i, Gl.i, UiScale.f, FontScale.f, ScreenTex.l, ScreenSprite.GLSprite
 Global Dim TexRows.l(#VID_W * #VID_H - 1)
 Global MouseDown.b, Wheel.i, KeyCode.i, KeyChar.i
 Global PhysW.i, PhysH.i, MemTab.i, MemTop.i, BreakText.String, BreakCaret.i
+; --pointer-test (see its section): the synthetic pointer, and where the memory pane was drawn
+Global PtOn.i, PtFile.s, PtX.f, PtY.f, PtDown.b, PtWheel.i, PtPass.i, PtPhase.i, PtFails.i, PtPoints.i, PtWorst.f
+Global PtLog.s, PtBefore.s, PtMemTop.i, PtDone.i
+Global MemPaneX.f, MemPaneY.f, MemPaneW.f, MemPaneH.f, TabStripY.f
+Structure PtRect : x.f : y.f : w.f : h.f : EndStructure
+Global NewMap PtCtl.PtRect()                    ; the Run panel's controls, by name, as last drawn
+Procedure PtNote(name.s, x.f, y.f, w.f, h.f)
+  PtCtl(name)\x = x : PtCtl(name)\y = y : PtCtl(name)\w = w : PtCtl(name)\h = h
+EndProcedure
 Global FpsShown.f, FpsCount.i, FpsMark.q, SpeedTStates.q, SpeedMark.q, SpeedMHz.f
 Global GetDpiForWindow_.i, ShotPath.s, ShotFrames.i
 Global EmuWasPaused.i, PaceResyncs.i
@@ -323,19 +334,20 @@ Global DrawUs.q, EmuUs.q, LoopCount.q, DrawUsShown.f, EmuUsShown.f, LoopsShown.f
 Declare SaveWindowShot(path.s)
 Declare.q MicroNow()
 
-Procedure.f WindowScale(w.i)
-  Protected dpi.i, lib.i
-  If GetDpiForWindow_ = 0
-    lib = OpenLibrary(#PB_Any, "user32.dll")
-    If lib : GetDpiForWindow_ = GetFunction(lib, "GetDpiForWindow") : EndIf
-  EndIf
-  If GetDpiForWindow_ : dpi = CallFunctionFast(GetDpiForWindow_, WindowID(w)) : EndIf
-  If dpi <= 0 : ProcedureReturn 1.0 : EndIf
-  ProcedureReturn dpi / 96.0
+; The display scale as measured: the physical client width (GetClientRect) over the logical inner width.
+Procedure.f MeasuredScale()
+  Protected r.RECT, lw.i = WindowWidth(Win, #PB_Window_InnerCoordinate)
+  GetClientRect_(WindowID(Win), @r)
+  If lw <= 0 Or r\right - r\left <= 0 : ProcedureReturn 1.0 : EndIf
+  ProcedureReturn (r\right - r\left) / lw
 EndProcedure
 
 Procedure BuildFonts()
   Protected s.f = UiScale
+  If *Neon_FontUI    : FreeGLFont(*Neon_FontUI)    : EndIf
+  If *Neon_FontSmall : FreeGLFont(*Neon_FontSmall) : EndIf
+  If *Neon_FontBold  : FreeGLFont(*Neon_FontBold)  : EndIf
+  If *Neon_FontMono  : FreeGLFont(*Neon_FontMono)  : EndIf
   *Neon_FontUI = Neon_CreateFontPx("Segoe UI", Round(14 * s, #PB_Round_Nearest))
   *Neon_FontSmall = Neon_CreateFontPx("Segoe UI", Round(12 * s, #PB_Round_Nearest))
   *Neon_FontBold = Neon_CreateFontPx("Segoe UI", Round(15 * s, #PB_Round_Nearest), #PB_Font_Bold)
@@ -413,7 +425,8 @@ Procedure DrawMemory(x.f, y.f, w.f, h.f)
     Default : base = $0000
   EndSelect
   rows = (h - Neon_S(66)) / lh
-  If Neon_Hit(x, y, w, h) And Wheel : MemTop - Wheel * 2 : EndIf
+  MemPaneX = x : MemPaneY = y : MemPaneW = w : MemPaneH = h : TabStripY = y + Neon_S(30)
+  If Neon_Hit(x, y, w, h) And Neon_Wheel : MemTop - Neon_Wheel * 2 : EndIf
   If MemTop < 0 : MemTop = 0 : EndIf
   cy = y + Neon_S(62)
   For row = 0 To rows - 1
@@ -428,11 +441,15 @@ Procedure DrawControls(x.f, y.f, w.f, h.f)
   Protected bw.f = Neon_S(92), bh.f = Neon_S(28), gx.f = x + Neon_S(10), gy.f = y + Neon_S(34), lab.s
   Neon_Panel(x, y, w, h, "Run", 1.0, 0.85, 0.30, Neon_S(26))
   If EmuRunning : lab = "Pause  F5" : Else : lab = "Run  F5" : EndIf
+  PtNote("pause", gx, gy, bw, bh) : PtNote("step", gx + bw + Neon_S(6), gy, bw, bh)
+  PtNote("frame", gx + 2 * (bw + Neon_S(6)), gy, bw, bh) : PtNote("reset", gx + 3 * (bw + Neon_S(6)), gy, bw, bh)
   If Neon_Button(gx, gy, bw, bh, lab, EmuRunning) : EmuRunning ! 1 : EmuStopReason = "" : EndIf
   If Neon_Button(gx + bw + Neon_S(6), gy, bw, bh, "Step  F10", #False, Bool(EmuRunning = 0)) : EmuStep() : VideoRender() : EndIf
   If Neon_Button(gx + 2 * (bw + Neon_S(6)), gy, bw, bh, "Frame  F11", #False, Bool(EmuRunning = 0)) : EmuFrame() : EndIf
   If Neon_Button(gx + 3 * (bw + Neon_S(6)), gy, bw, bh, "Reset  F3") : MachineReset() : EmuTDebt = 0 : EndIf
   gy + bh + Neon_S(8)
+  PtNote("focus", gx + Neon_S(70), gy, Neon_S(80), bh) : PtNote("clear", gx + Neon_S(160), gy, Neon_S(70), bh)
+  PtNote("coin", gx + Neon_S(240), gy, Neon_S(80), bh) : PtNote("1p", gx + Neon_S(326), gy, Neon_S(80), bh)
   Neon_Text(*Neon_FontUI, gx, gy + Neon_S(4), "Break at", 0.8, 0.85, 0.9)
   If Neon_TextInput(302, gx + Neon_S(70), gy, Neon_S(80), bh, @BreakText, "hex", @BreakCaret) Or #True
     If BreakText\s <> ""
@@ -457,18 +474,19 @@ Global SizedW.i = -1, SizedH.i = -1
 ; The size globals - only when the window's size changed (resizing the gadget every pass costs
 ; a relayout each time).
 Procedure SizeGlobals()
-  Protected client.RECT, cw.i = WindowWidth(Win), ch.i = WindowHeight(Win)
-  If cw = SizedW And ch = SizedH : ProcedureReturn : EndIf
-  SizedW = cw : SizedH = ch
-  ResizeGadget(Gl, 0, 0, cw, ch)
+  Protected client.RECT, cw.i = WindowWidth(Win, #PB_Window_InnerCoordinate), ch.i = WindowHeight(Win, #PB_Window_InnerCoordinate)
   GetClientRect_(WindowID(Win), @client)
+  ; the physical size is compared too: a move to a monitor with another scale may keep the logical size
+  If cw = SizedW And ch = SizedH And client\right - client\left = PhysW And client\bottom - client\top = PhysH : ProcedureReturn : EndIf
+  SizedW = cw : SizedH = ch
+  ResizeGadget(Gl, 0, 0, cw, ch)                ; the gadget fills the inner client from (0,0); a 1:1 window: no GL_HandleResize
   PhysW = client\right - client\left : PhysH = client\bottom - client\top
   If PhysW < 1 : PhysW = 1 : EndIf
   If PhysH < 1 : PhysH = 1 : EndIf
   Util_BaseWidth = PhysW : Util_BaseHeight = PhysH
   Util_WinWidth = cw : Util_WinHeight = ch
   GL_ViewportX = 0 : GL_ViewportY = 0 : GL_ViewportW = PhysW : GL_ViewportH = PhysH
-  UiScale = WindowScale(Win)
+  UiScale = MeasuredScale()
   If Abs(UiScale - FontScale) > 0.01 : BuildFonts() : EndIf
 EndProcedure
 
@@ -477,7 +495,10 @@ Procedure DrawWindow()
   Protected tp.q = MicroNow()
   ; one window, one GL context: it is made current once, in WindowRun (doing it every pass cost ~7 ms)
   SizeGlobals()
-  Neon_ChromeBeginFrame(WindowMouseX(Win), WindowMouseY(Win), MouseDown, Wheel, KeyCode, KeyChar, 1.0 / 60.0)
+  ; WindowMouseX/Y as they are (physical in a DPI-aware window); --pointer-test feeds its own point the same way
+  Protected mx.i = WindowMouseX(Win), my.i = WindowMouseY(Win), down.b = MouseDown, wh.i = Wheel
+  If PtOn : mx = PtX : my = PtY : down = PtDown : wh = PtWheel : EndIf
+  Neon_ChromeBeginFrame(mx, my, down, wh, KeyCode, KeyChar, 1.0 / 60.0)
   glBindFramebuffer(#GL_FRAMEBUFFER, 0)
   glDisable_(#GL_SCISSOR_TEST)
   glViewport_(0, 0, PhysW, PhysH)
@@ -488,7 +509,7 @@ Procedure DrawWindow()
   If sc < 1 : sc = 1 : EndIf
   sw = #VID_W * sc : sh = #VID_H * sc
   px = margin : y = (PhysH - sh) / 2
-  Neon_Box(px - 2, y - 2, sw + 4, sh + 4, 0.15, 0.20, 0.30)
+  Neon_Box(px - Neon_S(2), y - Neon_S(2), sw + Neon_S(4), sh + Neon_S(4), 0.15, 0.20, 0.30)
   PaneUs(6) + MicroNow() - tp : tp = MicroNow()
   ScreenTextureUpload()
   ; DrawGLSprite's position is the drawn rectangle's top-left at any scale
@@ -554,6 +575,127 @@ Procedure.q MicroNow()
   ProcedureReturn c * 1000000 / QpcFreq
 EndProcedure
 
+; ---------------------------------------------------------------- --pointer-test
+; The real pointer is shared with everyone on this desktop, so it is never moved: the window is driven with
+; synthetic positions in the units WindowMouseX/Y give a DPI-aware window (physical pixels), through the same
+; path (Neon_ChromeBeginFrame). For every control the engine registered: four points just inside its left,
+; right, top and bottom edges - the engine must read the point back (Neon_MX/MY) and find that control
+; there; then a press and release on each control of the Run panel and each memory tab, which must do what
+; the control does; then a wheel turn at four points of the memory pane at the bottom, which must scroll it.
+; /CONSTANT PLANT_CRT=1 turns the engine's CRT curve back on, only to see the test fail.
+Structure PtStepT
+  x.f : y.f : id.i : kind.i      ; kind: 0 hover, 1 click, 2 wheel
+  expect.s : what.s
+EndStructure
+Global NewList PtSteps.PtStepT()
+
+Procedure.s PtState()
+  ProcedureReturn "running=" + Str(EmuRunning) + " instr=" + Str(EmuInstr) + " frames=" + Str(EmuFrameCount) + " pc=" + Hex(Z80PC) +
+                  " held=" + Hex(EmuHeldKeys) + " focus=" + Str(Neon_FocusID) + " tab=" + Str(MemTab) + " break=" + BreakText\s
+EndProcedure
+
+Procedure PtAdd(x.f, y.f, id.i, kind.i, what.s, expect.s = "")
+  AddElement(PtSteps())
+  PtSteps()\x = x : PtSteps()\y = y : PtSteps()\id = id : PtSteps()\kind = kind : PtSteps()\what = what : PtSteps()\expect = expect
+EndProcedure
+
+Procedure PtBuild()
+  Protected i.i, k.i, x.f, y.f, w.f, h.f, id.i, m.f = Neon_S(2), name.s
+  Protected NewList tabs.i()
+  For i = 0 To Neon_HotPrevCount - 1
+    x = Neon_HotPrev(i)\x : y = Neon_HotPrev(i)\y : w = Neon_HotPrev(i)\w : h = Neon_HotPrev(i)\h : id = Neon_HotPrev(i)\id
+    If w < 4 Or h < 4 : Continue : EndIf
+    PtAdd(x + m, y + h / 2, id, 0, "left edge")
+    PtAdd(x + w - m, y + h / 2, id, 0, "right edge")
+    PtAdd(x + w / 2, y + m, id, 0, "top edge")
+    PtAdd(x + w / 2, y + h - m, id, 0, "bottom edge")
+  Next
+  ; presses on the Run panel, by name, where each was drawn (Pause first: it enables Step and Frame)
+  For k = 1 To 8
+    name = StringField("pause,step,frame,reset,focus,clear,coin,1p", k, ",")
+    If FindMapElement(PtCtl(), name)
+      PtAdd(PtCtl()\x + PtCtl()\w - m, PtCtl()\y + PtCtl()\h - m, 0, 1, "press " + name + ", bottom-right", name)
+    EndIf
+  Next
+  ; the memory tabs, by their place in the strip
+  For i = 0 To Neon_HotPrevCount - 1
+    If Abs(Neon_HotPrev(i)\y - TabStripY) < Neon_S(4) And Neon_HotPrev(i)\w >= 4 : AddElement(tabs()) : tabs() = i : EndIf
+  Next
+  k = 0
+  ForEach tabs()
+    x = Neon_HotPrev(tabs())\x : y = Neon_HotPrev(tabs())\y : w = Neon_HotPrev(tabs())\w : h = Neon_HotPrev(tabs())\h
+    PtAdd(x + w - m, y + h - m, Neon_HotPrev(tabs())\id, 1, "press, bottom-right corner", "tab" + Str(k))
+    k + 1
+  Next
+  ; the memory pane at the bottom of the window: a wheel turn at four points
+  PtAdd(MemPaneX + m, MemPaneY + MemPaneH / 2, -1, 2, "wheel, left edge")
+  PtAdd(MemPaneX + MemPaneW - m, MemPaneY + MemPaneH / 2, -1, 2, "wheel, right edge")
+  PtAdd(MemPaneX + MemPaneW / 2, MemPaneY + Neon_S(70), -1, 2, "wheel, top rows")
+  PtAdd(MemPaneX + MemPaneW / 2, MemPaneY + MemPaneH - m, -1, 2, "wheel, bottom edge")
+  PtLog + "scale " + StrF(Neon_UIScale, 3) + "  logical " + Str(Util_WinWidth) + "x" + Str(Util_WinHeight) + "  physical " +
+          Str(PhysW) + "x" + Str(PhysH) + "  UI_UseCRT " + Str(UI_UseCRT) + "  controls " + Str(Neon_HotPrevCount) + #LF$
+EndProcedure
+
+Procedure.i PtExpect(e.s, before.s, after.s)
+  Select e
+    Case "pause" : ProcedureReturn Bool(FindString(before, "running=1") And FindString(after, "running=0"))
+    Case "step"  : ProcedureReturn Bool(StringField(StringField(after, 2, " "), 2, "=") <> StringField(StringField(before, 2, " "), 2, "="))
+    Case "frame" : ProcedureReturn Bool(StringField(StringField(after, 3, " "), 2, "=") <> StringField(StringField(before, 3, " "), 2, "="))
+    Case "reset" : ProcedureReturn Bool(FindString(after, " pc=0 ") And FindString(before, " pc=0 ") = 0)
+    Case "focus" : ProcedureReturn Bool(FindString(after, "focus=302"))
+    Case "clear" : ProcedureReturn Bool(FindString(before, "break=12") And Right(after, 6) = "break=")
+    Case "coin"  : ProcedureReturn Bool(Val("$" + StringField(StringField(after, 5, " "), 2, "=")) & $20)
+    Case "1p"    : ProcedureReturn Bool(Val("$" + StringField(StringField(after, 5, " "), 2, "=")) & $100)
+  EndSelect
+  If Left(e, 3) = "tab" : ProcedureReturn Bool(FindString(after, "tab=" + Mid(e, 4) + " ")) : EndIf
+  ProcedureReturn 0
+EndProcedure
+
+; Called after each window pass has drawn: judges the pass, then sets the pointer for the next one.
+Procedure PtStep()
+  Protected err.f, found.i, ok.i, line.s, scrolled.i
+  PtPass + 1
+  If PtPass < 30 : ProcedureReturn : EndIf            ; let the window settle
+  If PtPass = 30 : PtBuild() : FirstElement(PtSteps()) : PtPhase = 0 : ProcedureReturn : EndIf
+  If PtDone Or ListIndex(PtSteps()) < 0 : ProcedureReturn : EndIf
+  Select PtPhase
+    Case 0                                            ; put the pointer there (and, for a press, the button down)
+      If PtSteps()\expect = "clear" : BreakText\s = "12" : Neon_FocusID = 0 : EndIf
+      PtBefore = PtState() : PtMemTop = MemTop
+      PtX = PtSteps()\x : PtY = PtSteps()\y : PtDown = Bool(PtSteps()\kind = 1) : PtWheel = 0
+      If PtSteps()\kind = 2 : PtWheel = -1 : EndIf
+      PtPhase = 1 : ProcedureReturn
+    Case 1
+      If PtSteps()\kind = 1 : PtDown = 0 : PtPhase = 2 : ProcedureReturn : EndIf   ; release on the next pass
+  EndSelect
+  ; the pass with the pointer there has been drawn: judge it
+  PtPoints + 1
+  err = Abs(Neon_MX - PtX) : If Abs(Neon_MY - PtY) > err : err = Abs(Neon_MY - PtY) : EndIf
+  If err > PtWorst : PtWorst = err : EndIf
+  Select PtSteps()\kind
+    Case 0 : found = Neon_HoverIdAt(Neon_MX, Neon_MY) : ok = Bool(found = PtSteps()\id And err <= 0.5)
+    Case 1 : ok = Bool(err <= 0.5 And PtExpect(PtSteps()\expect, PtBefore, PtState()))
+    Case 2 : scrolled = MemTop : ok = Bool(err <= 0.5 And scrolled > PtMemTop) : MemTop = 0
+  EndSelect
+  line = RSet(Str(PtSteps()\id), 15) + " " + LSet(PtSteps()\what, 27) + " at " + StrF(PtX, 1) + "," + StrF(PtY, 1) +
+         "  read back " + StrF(Neon_MX, 1) + "," + StrF(Neon_MY, 1)
+  If PtSteps()\kind = 0 : line + "  found " + Str(found) : EndIf
+  If PtSteps()\kind = 1 : line + "  " + PtSteps()\expect + ": " + PtBefore + "  ->  " + PtState() : EndIf
+  If PtSteps()\kind = 2 : line + "  memory top row " + Str(PtMemTop) + " -> " + Str(scrolled) : EndIf
+  If ok : line = "PASS " + line : Else : line = "FAIL " + line : PtFails + 1 : EndIf
+  PtLog + line + #LF$
+  PtX = -100 : PtY = -100 : PtDown = 0 : PtWheel = 0 : PtPhase = 0
+  If NextElement(PtSteps()) = 0
+    PtDone = 1
+    PtLog + "pointer-test: " + Str(PtPoints) + " points, " + Str(PtFails) + " failures, scale " + StrF(Neon_UIScale, 3) +
+            ", worst pointer read-back error " + StrF(PtWorst, 2) + " px" + #LF$
+  EndIf
+EndProcedure
+
+Procedure.i PtFinished()
+  ProcedureReturn PtDone
+EndProcedure
+
 Procedure WindowRun(folder.s)
   Protected ev.i, quit.i, frames.i, ok.i, nowUs.q, paceStart.q, paceFrames.q, i.i
   ExamineDesktops()
@@ -561,7 +703,13 @@ Procedure WindowRun(folder.s)
                     #PB_Window_SystemMenu | #PB_Window_ScreenCentered | #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget | #PB_Window_SizeGadget)
   If Gl = 0 : MessageRequester("Ms. Pac-Man", "Could not open an OpenGL window.") : ProcedureReturn : EndIf
   Win = Util_MainWindowID
-  UiScale = WindowScale(Win) : BuildFonts()
+  ; the engine bends the mouse for its CRT curvature unless told otherwise (UI_UseCRT defaults to #True);
+  ; this window draws flat, so a bent mouse missed the right-hand ends of controls by up to 10 px
+  UI_UseCRT = #False
+  CompilerIf Defined(PLANT_CRT, #PB_Constant)
+    UI_UseCRT = #True                           ; only to see --pointer-test fail
+  CompilerEndIf
+  UiScale = MeasuredScale() : BuildFonts()
   GL_SetVSync(1)
   SetGadgetAttribute(Gl, #PB_OpenGL_SetContext, #True)
   ScreenTextureInit()
@@ -625,8 +773,17 @@ Procedure WindowRun(folder.s)
     DrawWindow()
     DrawUs + MicroNow() - t0 : LoopCount + 1
     If ShotFrames = -1 : quit = 1 : EndIf
+    If PtOn
+      PtStep()
+      If PtFinished() : quit = 1 : EndIf
+    EndIf
   Until quit
   SoundClose()
+  If PtOn                                         ; --pointer-test: the log, and the failures as the exit code
+    Protected f.i = CreateFile(#PB_Any, PtFile)
+    If f : WriteString(f, PtLog) : CloseFile(f) : EndIf
+    End PtFails
+  EndIf
 EndProcedure
 
 ; ---------------------------------------------------------------------------
@@ -651,6 +808,7 @@ For i = 0 To CountProgramParameters() - 1
     Case "--mute" : SndMuted = 1
     Case "--wav" : i + 1 : WavOpen(ProgramParameter(i))
     Case "--poke" : i + 1 : EmuPoke = ProgramParameter(i)
+    Case "--pointer-test" : i + 1 : PtFile = ProgramParameter(i) : PtOn = 1 : SndMuted = 1
     Case "--sndtrace" : i + 1 : SndTraceFile = CreateFile(#PB_Any, ProgramParameter(i))
     Case "--log-every" : i + 1 : LogEvery = Val(ProgramParameter(i)) : If LogEvery < 1 : LogEvery = 1 : EndIf
     Case "--shot" : i + 1 : ShotPath = ProgramParameter(i) : i + 1 : ShotFrames = Val(ProgramParameter(i))

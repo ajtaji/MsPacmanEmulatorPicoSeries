@@ -176,6 +176,9 @@ Keys: arrows, `5` or `C` coin, `1` / `2` start, F5 run/pause, F10 step, F11 fram
 Other modes: `--log N` (no window, a line a second; build with `/CONSOLE`), `--wav <file>` (the sound
 chip's output), `--press 600:coin,660:start` (scripted inputs), `--shot <png> <frames>` (a screenshot),
 `--dump <file>` (a frame for `tools/grab.py --file`).
+`--pointer-test <log>` checks every control with synthetic pointer positions (four points on each, a press on
+each button, a wheel turn on the memory pane) without touching the real pointer; its exit code is the number
+of failures.
 
 ## The PureMetal demo for Pac-Man hardware
 
