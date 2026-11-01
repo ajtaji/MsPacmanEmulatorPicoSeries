@@ -52,8 +52,8 @@ Procedure.i RomLoadFolder(folder.s)
   For i = 0 To #ROM_COUNT - 1
     If *RomData(i) : FreeMemory(*RomData(i)) : *RomData(i) = 0 : EndIf
   Next
-  If Right(folder, 1) <> "\" And Right(folder, 1) <> "/" : folder + "\" : EndIf
-  dir = ExamineDirectory(#PB_Any, folder, "*.*")
+  If Right(folder, 1) <> "\" And Right(folder, 1) <> "/" : folder + #PS$ : EndIf
+  dir = ExamineDirectory(#PB_Any, folder, "")      ; every file, with or without a dot in its name
   If dir = 0
     RomError = "the ROM folder " + folder + " cannot be read"
     ProcedureReturn 0

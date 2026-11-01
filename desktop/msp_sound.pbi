@@ -4,7 +4,9 @@
 ; Registers (WsgRegs, $5040-$505F low nibbles): 05/0A/0F waveforms, 10..14 voice 0 frequency,
 ; 15 volume, 16..19 voice 1 frequency (bits 4-19), 1A volume, 1B..1E voice 2, 1F volume.
 ;
-; Output: Windows waveOut, 48 kHz mono 16-bit, a ring of 12 buffers of one frame (792 samples).
+; Output: the sound card through the Neon Arcade engine (GL_AudioOpen / GL_AudioNext / GL_AudioPlay:
+; waveOut on Windows, ALSA on Linux), 48 kHz 16-bit, the mono sample in both channels, 12 buffers of
+; one frame (792 pairs).
 
 EnableExplicit
 
@@ -14,9 +16,7 @@ EnableExplicit
 Global Dim WsgWave.w(255)
 Global Dim WsgCounter.l(2)
 Global Dim SndFrame.w(#MSP_FRAME_SAMPLES - 1)
-Global SndDevice.i, SndOpen.i, SndNext.i, SndUnderruns.i, SndQueued.i, SndMuted.i
-Global Dim SndHeader.WAVEHDR(#SND_BUFFERS - 1)
-Global Dim *SndBuffer(#SND_BUFFERS - 1)
+Global SndOpen.i, SndUnderruns.i, SndQueued.i, SndMuted.i
 
 Procedure WsgBegin(*prom)
   Protected i.i
@@ -57,56 +57,33 @@ Procedure WsgRender()
 EndProcedure
 
 Procedure.i SoundOpen()
-  Protected fmt.WAVEFORMATEX, i.i
-  fmt\wFormatTag = #WAVE_FORMAT_PCM : fmt\nChannels = 1 : fmt\nSamplesPerSec = 48000
-  fmt\wBitsPerSample = 16 : fmt\nBlockAlign = 2 : fmt\nAvgBytesPerSec = 96000 : fmt\cbSize = 0
-  If waveOutOpen_(@SndDevice, #WAVE_MAPPER, @fmt, 0, 0, #CALLBACK_NULL) <> #MMSYSERR_NOERROR
-    ProcedureReturn 0
-  EndIf
-  For i = 0 To #SND_BUFFERS - 1
-    *SndBuffer(i) = AllocateMemory(#MSP_FRAME_SAMPLES * 2)
-    SndHeader(i)\lpData = *SndBuffer(i)
-    SndHeader(i)\dwBufferLength = #MSP_FRAME_SAMPLES * 2
-    SndHeader(i)\dwFlags = 0
-    waveOutPrepareHeader_(SndDevice, @SndHeader(i), SizeOf(WAVEHDR))
-    SndHeader(i)\dwFlags | #WHDR_DONE           ; free to fill
-  Next
-  SndOpen = 1
+  If GL_AudioOpen(48000, #MSP_FRAME_SAMPLES, #SND_BUFFERS) = #False : ProcedureReturn 0 : EndIf
+  SndOpen = 1 : SndQueued = 0
   ProcedureReturn 1
 EndProcedure
 
-; Buffers the device still holds (0 means the next one plays late: an underrun).
-Procedure.i SoundPending()
-  Protected i.i, n.i
-  For i = 0 To #SND_BUFFERS - 1
-    If (SndHeader(i)\dwFlags & #WHDR_DONE) = 0 : n + 1 : EndIf
-  Next
-  ProcedureReturn n
-EndProcedure
-
-; One buffer to the device: the frame's samples, or silence. 0 when the next buffer still plays.
+; One buffer to the card: the frame's samples, or silence. 0 when every buffer is still queued.
 Procedure.i SoundSend(silent.i)
-  Protected i.i = SndNext
-  If (SndHeader(i)\dwFlags & #WHDR_DONE) = 0 : ProcedureReturn 0 : EndIf
-  If SndMuted Or silent
-    FillMemory(*SndBuffer(i), #MSP_FRAME_SAMPLES * 2, 0)
-  Else
-    CopyMemory(@SndFrame(0), *SndBuffer(i), #MSP_FRAME_SAMPLES * 2)
-  EndIf
-  SndHeader(i)\dwFlags & ~#WHDR_DONE
-  waveOutWrite_(SndDevice, @SndHeader(i), SizeOf(WAVEHDR))
-  SndNext = (i + 1) % #SND_BUFFERS : SndQueued + 1
+  Protected i.i, v.w, *dst = GL_AudioNext()
+  If *dst = 0 : ProcedureReturn 0 : EndIf
+  For i = 0 To #MSP_FRAME_SAMPLES - 1
+    If SndMuted Or silent : v = 0 : Else : v = SndFrame(i) : EndIf
+    PokeW(*dst + i * 4, v) : PokeW(*dst + i * 4 + 2, v)
+  Next
+  GL_AudioPlay(*dst)
+  SndQueued + 1
   ProcedureReturn 1
 EndProcedure
 
 ; Queue this frame's samples. The frames are made at the real-time rate, so the queue holds
 ; what it started with: it starts with #SND_CUSHION frames of silence, and when it has run dry
-; (an underrun - a pass came late) the cushion is put back the same way.
+; (an underrun - a pass came late; the engine's GL_AudioQueued says 0) the cushion is put back
+; the same way.
 #SND_CUSHION = 5
 Procedure.i SoundQueue()
   Protected k.i
   If SndOpen = 0 : ProcedureReturn 0 : EndIf
-  If SoundPending() = 0
+  If GL_AudioQueued() = 0
     If SndQueued > 0 : SndUnderruns + 1 : EndIf
     For k = 1 To #SND_CUSHION : SoundSend(1) : Next
   EndIf
@@ -114,13 +91,7 @@ Procedure.i SoundQueue()
 EndProcedure
 
 Procedure SoundClose()
-  Protected i.i
   If SndOpen = 0 : ProcedureReturn : EndIf
-  waveOutReset_(SndDevice)
-  For i = 0 To #SND_BUFFERS - 1
-    waveOutUnprepareHeader_(SndDevice, @SndHeader(i), SizeOf(WAVEHDR))
-    FreeMemory(*SndBuffer(i))
-  Next
-  waveOutClose_(SndDevice)
+  GL_AudioClose()
   SndOpen = 0
 EndProcedure

@@ -5,6 +5,11 @@
 ;   & "C:\Program Files\PureBasic\Compilers\pbcompilerc.exe" desktop\MsPacman.pb /EXE build\MsPacman.exe /THREAD /DPIAWARE
 ;       [/CONSTANT GL_ENGINE_DIR$=C:/path/to/engine/]   (default: Neon-Arcade-Dispay-Engine cloned beside this repo)
 ;       [/CONSTANT MSP_Z80_DIR$=C:/path/to/Z80EmulatorPicoSeries/desktop/]   (default: beside this repo)
+; BUILD (Linux x64, the same source; PUREBASIC_HOME set, the C back end):
+;   $PUREBASIC_HOME/compilers/pbcompilerc -t -o MsPacman desktop/MsPacman.pb
+;       [-co GL_ENGINE_DIR$=/path/to/engine/] [-co MSP_Z80_DIR$=/path/to/Z80EmulatorPicoSeries/desktop/]
+; Everything the OS gives (window, keys, sound, clock, full screen, the pointer) comes through the Neon
+; Arcade engine's HOST SERVICES; the program itself calls no OS function.
 ; RUN:
 ;   MsPacman.exe [ROM folder]               the window (asks for the folder when none is given)
 ;   MsPacman.exe <ROM folder> --log N       no window: N frames, a log line per second, then exit
@@ -356,13 +361,13 @@ Procedure CtlAdd(kind.i, name.s, keys.s, vk1.i, vk2.i, bits.i, action.i, key.i, 
 EndProcedure
 
 Procedure CtlInit()
-  CtlAdd(0, "Joystick up", "Up arrow", #VK_UP, 0, 1, 0, 0)
-  CtlAdd(0, "Joystick down", "Down arrow", #VK_DOWN, 0, 8, 0, 0)
-  CtlAdd(0, "Joystick left", "Left arrow", #VK_LEFT, 0, 2, 0, 0)
-  CtlAdd(0, "Joystick right", "Right arrow", #VK_RIGHT, 0, 4, 0, 0)
-  CtlAdd(0, "Coin", "5 or C", '5', 'C', $20, 0, 0)
-  CtlAdd(0, "1 player start", "1", '1', 0, $100, 0, 0)
-  CtlAdd(0, "2 player start", "2", '2', 0, $200, 0, 0)
+  CtlAdd(0, "Joystick up", "Up arrow", #PB_Shortcut_Up, 0, 1, 0, 0)
+  CtlAdd(0, "Joystick down", "Down arrow", #PB_Shortcut_Down, 0, 8, 0, 0)
+  CtlAdd(0, "Joystick left", "Left arrow", #PB_Shortcut_Left, 0, 2, 0, 0)
+  CtlAdd(0, "Joystick right", "Right arrow", #PB_Shortcut_Right, 0, 4, 0, 0)
+  CtlAdd(0, "Coin", "5 or C", #PB_Shortcut_5, #PB_Shortcut_C, $20, 0, 0)
+  CtlAdd(0, "1 player start", "1", #PB_Shortcut_1, 0, $100, 0, 0)
+  CtlAdd(0, "2 player start", "2", #PB_Shortcut_2, 0, $200, 0, 0)
   CtlAdd(1, "Run / pause", "F5", 0, 0, 0, #ACT_RUN, #PB_Shortcut_F5)
   CtlAdd(1, "Step one instruction (paused)", "F10", 0, 0, 0, #ACT_STEP, #PB_Shortcut_F10)
   CtlAdd(1, "Run one frame (paused)", "F9", 0, 0, 0, #ACT_FRAME, #PB_Shortcut_F9)
@@ -380,12 +385,12 @@ Procedure.s CtlKeys(action.i)
   ProcedureReturn ""
 EndProcedure
 
-; The arcade inputs held now.
+; The arcade inputs held now (the engine's GL_KeyHeld; the keys are #PB_Shortcut_ codes).
 Procedure.i CtlHeld()
   Protected k.i
   ForEach Ctl()
     If Ctl()\kind = 0
-      If (GetAsyncKeyState_(Ctl()\vk1) & $8000) Or (Ctl()\vk2 And (GetAsyncKeyState_(Ctl()\vk2) & $8000)) : k | Ctl()\bits : EndIf
+      If GL_KeyHeld(Ctl()\vk1) Or GL_KeyHeld(Ctl()\vk2) : k | Ctl()\bits : EndIf
     EndIf
   Next
   ProcedureReturn k
@@ -414,19 +419,20 @@ Procedure CtlKey(code.i)
 EndProcedure
 
 Global FpsShown.f, FpsCount.i, FpsMark.q, SpeedTStates.q, SpeedMark.q, SpeedMHz.f
-Global GetDpiForWindow_.i, ShotPath.s, ShotFrames.i
+Global ShotPath.s, ShotFrames.i
 Global EmuWasPaused.i, PaceResyncs.i
 Global Dim PaneUs.q(7), Dim PaneShown.f(7)
-Global DrawUs.q, EmuUs.q, LoopCount.q, DrawUsShown.f, EmuUsShown.f, LoopsShown.f, QpcFreq.q
+Global DrawUs.q, EmuUs.q, LoopCount.q, DrawUsShown.f, EmuUsShown.f, LoopsShown.f
 Declare SaveWindowShot(path.s)
 Declare.q MicroNow()
 
-; The display scale as measured: the physical client width (GetClientRect) over the logical inner width.
+; The display scale as measured: the physical client width (the engine's GL_ClientPixels) over the
+; logical inner width.
 Procedure.f MeasuredScale()
-  Protected r.RECT, lw.i = WindowWidth(Win, #PB_Window_InnerCoordinate)
-  GetClientRect_(WindowID(Win), @r)
-  If lw <= 0 Or r\right - r\left <= 0 : ProcedureReturn 1.0 : EndIf
-  ProcedureReturn (r\right - r\left) / lw
+  Protected pw.i, ph.i, lw.i = WindowWidth(Win, #PB_Window_InnerCoordinate)
+  GL_ClientPixels(Win, @pw, @ph)
+  If lw <= 0 Or pw <= 0 : ProcedureReturn 1.0 : EndIf
+  ProcedureReturn pw / lw
 EndProcedure
 
 Procedure BuildFonts()
@@ -455,12 +461,19 @@ Procedure ScreenTextureInit()
   ScreenSprite\TextureID = ScreenTex : ScreenSprite\Width = #VID_W : ScreenSprite\Height = #VID_H
 EndProcedure
 
-; The engine samples a sprite's top edge at v = 1 (Windows): the texture is sent bottom row first.
+; DrawGLSprite takes a texture's rows the way the engine's images lay them out: bottom row first where
+; the drawing buffer is bottom-up (Windows), top row first where it is not (Linux). The engine's own
+; probe says which (GLF_ProbeBufferOrder), so this needs no knowledge of the OS.
 Procedure ScreenTextureUpload()
   Protected y.i
-  For y = 0 To #VID_H - 1
-    CopyMemory(@VidFrame(y * #VID_W), @TexRows((#VID_H - 1 - y) * #VID_W), #VID_W * 4)
-  Next
+  GLF_ProbeBufferOrder()
+  If GLF_BottomUp
+    For y = 0 To #VID_H - 1
+      CopyMemory(@VidFrame(y * #VID_W), @TexRows((#VID_H - 1 - y) * #VID_W), #VID_W * 4)
+    Next
+  Else
+    CopyMemory(@VidFrame(0), @TexRows(0), #VID_W * #VID_H * 4)
+  EndIf
   glBindTexture_(#GL_TEXTURE_2D, ScreenTex)
   glTexSubImage2D_(#GL_TEXTURE_2D, 0, 0, 0, #VID_W, #VID_H, #GL_RGBA, #GL_UNSIGNED_BYTE, @TexRows(0))
 EndProcedure
@@ -565,13 +578,13 @@ Global SizedW.i = -1, SizedH.i = -1
 ; The size globals - only when the window's size changed (resizing the gadget every pass costs
 ; a relayout each time).
 Procedure SizeGlobals()
-  Protected client.RECT, cw.i = WindowWidth(Win, #PB_Window_InnerCoordinate), ch.i = WindowHeight(Win, #PB_Window_InnerCoordinate)
-  GetClientRect_(WindowID(Win), @client)
+  Protected pw.i, ph.i, cw.i = WindowWidth(Win, #PB_Window_InnerCoordinate), ch.i = WindowHeight(Win, #PB_Window_InnerCoordinate)
+  GL_ClientPixels(Win, @pw, @ph)
   ; the physical size is compared too: a move to a monitor with another scale may keep the logical size
-  If cw = SizedW And ch = SizedH And client\right - client\left = PhysW And client\bottom - client\top = PhysH : ProcedureReturn : EndIf
+  If cw = SizedW And ch = SizedH And pw = PhysW And ph = PhysH : ProcedureReturn : EndIf
   SizedW = cw : SizedH = ch
   ResizeGadget(Gl, 0, 0, cw, ch)                ; the gadget fills the inner client from (0,0); a 1:1 window: no GL_HandleResize
-  PhysW = client\right - client\left : PhysH = client\bottom - client\top
+  PhysW = pw : PhysH = ph
   If PhysW < 1 : PhysW = 1 : EndIf
   If PhysH < 1 : PhysH = 1 : EndIf
   Util_BaseWidth = PhysW : Util_BaseHeight = PhysH
@@ -588,33 +601,23 @@ EndProcedure
 ; of the height. The windowed placement is saved and put back exactly; the scale is measured again on the
 ; way in and out (SizeGlobals). The cursor hides after 2 s without moving and shows again when moved.
 Declare SaveWindowShot(path.s)
-Global FullPlace.WINDOWPLACEMENT, FullStyle.i, FullMonL.i, FullMonT.i, FullMonR.i, FullMonB.i
+Global FullMon.GLHostRect
 Global FullDrawX.f, FullDrawY.f, FullDrawW.f, FullDrawH.f, FullShot.s
 Global FullLastMX.i = -1, FullLastMY.i = -1, FullMovedMs.q, FullCursorHidden.i
 Global ScreenSprite34.GLSprite                  ; the screen texture at the monitor's shape: 216 x 288 = 3:4
 
-Procedure EnterFull()
-  Protected hwnd.i = WindowID(Win), mi.MONITORINFO
+Procedure EnterFull()                             ; (the engine's GL_FullscreenEnter)
   If FullOn : ProcedureReturn : EndIf
-  FullPlace\length = SizeOf(WINDOWPLACEMENT)
-  GetWindowPlacement_(hwnd, @FullPlace)
-  FullStyle = GetWindowLongPtr_(hwnd, #GWL_STYLE)
-  mi\cbSize = SizeOf(MONITORINFO)
-  GetMonitorInfo_(MonitorFromWindow_(hwnd, #MONITOR_DEFAULTTONEAREST), @mi)
-  FullMonL = mi\rcMonitor\left : FullMonT = mi\rcMonitor\top : FullMonR = mi\rcMonitor\right : FullMonB = mi\rcMonitor\bottom
-  SetWindowLongPtr_(hwnd, #GWL_STYLE, (FullStyle & ~#WS_OVERLAPPEDWINDOW) | #WS_POPUP)
-  SetWindowPos_(hwnd, #HWND_TOP, FullMonL, FullMonT, FullMonR - FullMonL, FullMonB - FullMonT, #SWP_FRAMECHANGED | #SWP_NOOWNERZORDER | #SWP_SHOWWINDOW)
+  GL_FullscreenEnter(Win)
+  GL_FullscreenRect(@FullMon)
   FullOn = 1 : SizedW = -1 : FullMovedMs = ElapsedMilliseconds() : FullLastMX = -1
   SetActiveGadget(Gl)
 EndProcedure
 
-Procedure LeaveFull()
-  Protected hwnd.i = WindowID(Win)
+Procedure LeaveFull()                             ; (the engine's GL_FullscreenLeave)
   If FullOn = 0 : ProcedureReturn : EndIf
-  SetWindowLongPtr_(hwnd, #GWL_STYLE, FullStyle)
-  SetWindowPlacement_(hwnd, @FullPlace)
-  SetWindowPos_(hwnd, 0, 0, 0, 0, 0, #SWP_NOMOVE | #SWP_NOSIZE | #SWP_NOZORDER | #SWP_NOOWNERZORDER | #SWP_FRAMECHANGED)
-  If FullCursorHidden : ShowCursor_(#True) : FullCursorHidden = 0 : EndIf
+  GL_FullscreenLeave(Win)
+  If FullCursorHidden : GL_CursorShow(Win, Gl, #True) : FullCursorHidden = 0 : EndIf
   FullOn = 0 : SizedW = -1
   SetActiveGadget(Gl)
 EndProcedure
@@ -624,9 +627,9 @@ Procedure FullCursor()
   Protected mx.i = WindowMouseX(Win), my.i = WindowMouseY(Win)
   If mx <> FullLastMX Or my <> FullLastMY
     FullLastMX = mx : FullLastMY = my : FullMovedMs = ElapsedMilliseconds()
-    If FullCursorHidden : ShowCursor_(#True) : FullCursorHidden = 0 : EndIf
+    If FullCursorHidden : GL_CursorShow(Win, Gl, #True) : FullCursorHidden = 0 : EndIf
   ElseIf FullCursorHidden = 0 And ElapsedMilliseconds() - FullMovedMs > 2000
-    ShowCursor_(#False) : FullCursorHidden = 1
+    GL_CursorShow(Win, Gl, #False) : FullCursorHidden = 1
   EndIf
 EndProcedure
 
@@ -675,10 +678,11 @@ EndProcedure
 ; Synthetic, like --pointer-test: in by the Full screen button (a synthetic press) and out by Esc, then in
 ; and out by F11 - both through the same key handler as the keyboard. Each time in: the window covers its
 ; monitor exactly, the game is 3:4 and centred, the emulation keeps 60.6 frames a second; each time out:
-; the windowed placement, style, client size and scale are back exactly. Saves one picture of this window
-; in full screen (<log>.png).
+; the windowed rectangle, client size and scale are back exactly (all read through the engine:
+; GL_WindowRect, GL_ClientPixels, GL_FullscreenRect). Saves one picture of this window in full screen
+; (<log>.png).
 Global FsOn.i, FsFile.s, FsLog.s, FsFails.i, FsPass.i, FsCycle.i, FsState.i, FsMs.q, FsF0.q
-Global FsRect.RECT, FsClient.RECT, FsStyle.i, FsScale.f
+Global FsRect.GLHostRect, FsClientW.i, FsClientH.i, FsScale.f
 
 Procedure FsCheck(ok.i, what.s)
   If ok : FsLog + "PASS " + what + #LF$ : Else : FsLog + "FAIL " + what + #LF$ : FsFails + 1 : EndIf
@@ -690,17 +694,16 @@ EndProcedure
 
 ; Called after each window pass.
 Procedure FsStep()
-  Protected r.RECT, c.RECT, aspect.f, fps.f, gapL.f, gapR.f, gapT.f, gapB.f, how.s
+  Protected r.GLHostRect, cw.i, ch.i, aspect.f, fps.f, gapL.f, gapR.f, gapT.f, gapB.f, how.s
   FsPass + 1
   If FsPass < 40 Or FsCycle >= 2 : ProcedureReturn : EndIf
   If FsCycle = 0 : how = "the Full screen button, out by Esc" : Else : how = "F11, out by F11" : EndIf
   Select FsState
     Case 0                                            ; windowed: note everything, then go in
-      GetWindowRect_(WindowID(Win), @FsRect) : GetClientRect_(WindowID(Win), @FsClient)
-      FsStyle = GetWindowLongPtr_(WindowID(Win), #GWL_STYLE) : FsScale = Neon_UIScale
+      GL_WindowRect(Win, @FsRect) : GL_ClientPixels(Win, @FsClientW, @FsClientH) : FsScale = Neon_UIScale
       FsLog + "cycle " + Str(FsCycle + 1) + ", in by " + how + #LF$
-      FsLog + "  windowed: window " + Str(FsRect\left) + "," + Str(FsRect\top) + " " + Str(FsRect\right - FsRect\left) + "x" +
-              Str(FsRect\bottom - FsRect\top) + ", client " + Str(FsClient\right) + "x" + Str(FsClient\bottom) + ", scale " + StrF(FsScale, 3) + #LF$
+      FsLog + "  windowed: window " + Str(FsRect\X) + "," + Str(FsRect\Y) + " " + Str(FsRect\W) + "x" +
+              Str(FsRect\H) + ", client " + Str(FsClientW) + "x" + Str(FsClientH) + ", scale " + StrF(FsScale, 3) + #LF$
       If FsCycle = 0                                  ; a synthetic press where the button was drawn
         PtX = PtCtl("full")\x + PtCtl("full")\w / 2 : PtY = PtCtl("full")\y + PtCtl("full")\h / 2 : PtDown = 1
       Else
@@ -713,12 +716,12 @@ Procedure FsStep()
     Case 2                                            ; three seconds in full screen, then judge it
       If ElapsedMilliseconds() - FsMs < 3000 : ProcedureReturn : EndIf
       fps = (EmuFrameCount - FsF0) * 1000.0 / (ElapsedMilliseconds() - FsMs)
-      GetWindowRect_(WindowID(Win), @r) : GetClientRect_(WindowID(Win), @c)
+      GL_WindowRect(Win, @r) : GL_ClientPixels(Win, @cw, @ch)
       FsCheck(FullOn, "  full screen is on")
-      FsCheck(Bool(r\left = FullMonL And r\top = FullMonT And r\right = FullMonR And r\bottom = FullMonB),
-              "  the window covers its monitor: " + Str(r\left) + "," + Str(r\top) + "-" + Str(r\right) + "," + Str(r\bottom) +
-              " (monitor " + Str(FullMonL) + "," + Str(FullMonT) + "-" + Str(FullMonR) + "," + Str(FullMonB) + ")")
-      FsCheck(Bool(c\right = PhysW And c\bottom = PhysH And PhysW = FullMonR - FullMonL And PhysH = FullMonB - FullMonT),
+      FsCheck(Bool(r\X = FullMon\X And r\Y = FullMon\Y And r\W = FullMon\W And r\H = FullMon\H),
+              "  the window covers its monitor: " + Str(r\X) + "," + Str(r\Y) + " " + Str(r\W) + "x" + Str(r\H) +
+              " (monitor " + Str(FullMon\X) + "," + Str(FullMon\Y) + " " + Str(FullMon\W) + "x" + Str(FullMon\H) + ")")
+      FsCheck(Bool(cw = PhysW And ch = PhysH And PhysW = FullMon\W And PhysH = FullMon\H),
               "  client and canvas are the monitor's size: " + Str(PhysW) + "x" + Str(PhysH))
       aspect = FullDrawW / FullDrawH
       FsCheck(Bool(Abs(aspect - 0.75) < 0.002), "  the game is 3:4: " + StrF(FullDrawW, 1) + " x " + StrF(FullDrawH, 1) + " = " + StrF(aspect, 4))
@@ -735,12 +738,11 @@ Procedure FsStep()
       FsState = 4 : FsMs = ElapsedMilliseconds()
     Case 4                                            ; a second later: everything as it was?
       If ElapsedMilliseconds() - FsMs < 1000 : ProcedureReturn : EndIf
-      GetWindowRect_(WindowID(Win), @r) : GetClientRect_(WindowID(Win), @c)
-      FsCheck(Bool(FullOn = 0), "  full screen is off")
-      FsCheck(Bool(r\left = FsRect\left And r\top = FsRect\top And r\right = FsRect\right And r\bottom = FsRect\bottom),
-              "  the windowed rectangle is back exactly: " + Str(r\left) + "," + Str(r\top) + " " + Str(r\right - r\left) + "x" + Str(r\bottom - r\top))
-      FsCheck(Bool(c\right = FsClient\right And c\bottom = FsClient\bottom), "  the client size is back: " + Str(c\right) + "x" + Str(c\bottom))
-      FsCheck(Bool(GetWindowLongPtr_(WindowID(Win), #GWL_STYLE) = FsStyle), "  the window style is back")
+      GL_WindowRect(Win, @r) : GL_ClientPixels(Win, @cw, @ch)
+      FsCheck(Bool(FullOn = 0 And GL_FullscreenIsOn() = 0), "  full screen is off")
+      FsCheck(Bool(r\X = FsRect\X And r\Y = FsRect\Y And r\W = FsRect\W And r\H = FsRect\H),
+              "  the windowed rectangle is back exactly: " + Str(r\X) + "," + Str(r\Y) + " " + Str(r\W) + "x" + Str(r\H))
+      FsCheck(Bool(cw = FsClientW And ch = FsClientH), "  the client size is back: " + Str(cw) + "x" + Str(ch))
       FsCheck(Bool(Abs(Neon_UIScale - FsScale) < 0.01 And Abs(Neon_UIScale - MeasuredScale()) < 0.01), "  the scale measured again: " + StrF(Neon_UIScale, 3))
       FsCheck(Bool(FullCursorHidden = 0), "  the cursor is shown")
       FsCycle + 1 : FsState = 0
@@ -803,7 +805,7 @@ EndProcedure
 
 Procedure.i HostKeys()
   Protected k.i
-  If GetForegroundWindow_() <> WindowID(Win) : ProcedureReturn 0 : EndIf
+  If GetActiveWindow() <> Win : ProcedureReturn 0 : EndIf   ; not in front: the keys are someone else's
   If Neon_FocusID <> 0 : ProcedureReturn 0 : EndIf      ; typing into the breakpoint box
   ProcedureReturn CtlHeld()                            ; the controls table
 EndProcedure
@@ -828,11 +830,8 @@ Procedure SaveWindowShot(path.s)
   FreeMemory(*px)
 EndProcedure
 
-Procedure.q MicroNow()
-  Protected c.q
-  If QpcFreq = 0 : QueryPerformanceFrequency_(@QpcFreq) : EndIf
-  QueryPerformanceCounter_(@c)
-  ProcedureReturn c * 1000000 / QpcFreq
+Procedure.q MicroNow()                           ; (the engine's monotonic clock)
+  ProcedureReturn GL_Micros()
 EndProcedure
 
 ; ---------------------------------------------------------------- --pointer-test
@@ -978,6 +977,7 @@ Procedure WindowRun(folder.s)
   CompilerIf Defined(PLANT_CRT, #PB_Constant)
     UI_UseCRT = #True                           ; only to see --pointer-test fail
   CompilerEndIf
+  GL_HostScaleRead(Gl)                            ; (the engine's: the display scale on Linux)
   UiScale = MeasuredScale() : BuildFonts()
   GL_SetVSync(1)
   SetGadgetAttribute(Gl, #PB_OpenGL_SetContext, #True)
@@ -1064,6 +1064,7 @@ Procedure CrashReport()
   EndIf
 EndProcedure
 OnErrorCall(@CrashReport())
+GL_HostPrepare()                                  ; (the engine's: before any window or requester - Linux's X11 setup)
 
 Define folder.s, i.i, logFrames.i, dump.s
 For i = 0 To CountProgramParameters() - 1
