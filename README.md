@@ -212,8 +212,7 @@ $PUREBASIC_HOME/compilers/pbcompilerc -t -o MsPacman desktop/MsPacman.pb
 
 The engine and the Z80 core are found beside this repository; elsewhere, say where with
 `/CONSTANT GL_ENGINE_DIR$=<folder>/` and `/CONSTANT MSP_Z80_DIR$=<Z80 repository>/desktop/` (trailing slash;
-on Linux `-co GL_ENGINE_DIR$=<folder>/`). Under WSL (WSLg) the GPU driver can stall the window's vsync wait;
-run with `vblank_mode=0` or `LIBGL_ALWAYS_SOFTWARE=1`.
+on Linux `-co GL_ENGINE_DIR$=<folder>/`).
 Keys: see [Controls](#the-desktop-version) - also the **Controls** button in the window. **Full screen**
 (the button or F11, Esc leaves) shows the game alone at its 3:4 shape.
 Other modes: `--log N` (no window, a line a second; build with `/CONSOLE`), `--wav <file>` (the sound
