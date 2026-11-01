@@ -461,13 +461,11 @@ Procedure ScreenTextureInit()
   ScreenSprite\TextureID = ScreenTex : ScreenSprite\Width = #VID_W : ScreenSprite\Height = #VID_H
 EndProcedure
 
-; DrawGLSprite takes a texture's rows the way the engine's images lay them out: bottom row first where
-; the drawing buffer is bottom-up (Windows), top row first where it is not (Linux). The engine's own
-; probe says which (GLF_ProbeBufferOrder), so this needs no knowledge of the OS.
+; DrawGLSprite draws row 0 of a texture filled from memory at the bottom on some systems (Windows) and at
+; the top on others (Linux); the engine says which (#GL_SpriteRowsBottomUp), so this needs no OS test.
 Procedure ScreenTextureUpload()
   Protected y.i
-  GLF_ProbeBufferOrder()
-  If GLF_BottomUp
+  If #GL_SpriteRowsBottomUp
     For y = 0 To #VID_H - 1
       CopyMemory(@VidFrame(y * #VID_W), @TexRows((#VID_H - 1 - y) * #VID_W), #VID_W * 4)
     Next
@@ -997,7 +995,7 @@ Procedure WindowRun(folder.s)
               Case #PB_EventType_LeftButtonUp : MouseDown = #False
               Case #PB_EventType_MouseWheel : Wheel + GetGadgetAttribute(Gl, #PB_OpenGL_WheelDelta)
               Case #PB_EventType_KeyDown
-                KeyCode = GetGadgetAttribute(Gl, #PB_OpenGL_Key)
+                KeyCode = GL_KeyEventCode(GetGadgetAttribute(Gl, #PB_OpenGL_Key))   ; (the same code on both OSes)
                 CtlKey(KeyCode)                        ; the controls table
               Case #PB_EventType_Input : KeyChar = GetGadgetAttribute(Gl, #PB_OpenGL_Input)
             EndSelect
