@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IMAGE_LIMIT = 0x10040000          # the ROM pack's first byte (romstore.pico #ROMPACK_FLASH)
 PACK_END = 0x10050000             # ... and the end of its region
 FAMILY = {'rp2040': 0xE48BFF56, 'rp2350': 0xE48BFF59}
+ABSOLUTE = 0xE48BFF57             # the RP2350-E10 workaround block ("absolute" family), as picotool writes it
 
 
 def image_end(uf2, family, assets=False):
@@ -29,6 +30,8 @@ def image_end(uf2, family, assets=False):
     end = 0
     for offset in range(0, len(data), 512):
         m0, m1, flags, target, size, number, count, fam = struct.unpack_from('<8I', data, offset)
+        if (m0, m1) == (0x0A324655, 0x9E5D5157) and fam == ABSOLUTE:
+            continue                                      # not part of the image
         if (m0, m1) != (0x0A324655, 0x9E5D5157) or fam != family:
             raise SystemExit(f'{uf2}: block {offset // 512} is not a {family:08X} UF2 block')
         if assets and IMAGE_LIMIT <= target and target + size <= PACK_END:
